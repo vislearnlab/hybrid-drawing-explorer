@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hybrid Drawing Explorer · children's concept blends in CLIP space</title>
+<style>
+  :root { --bg:#0e0b16; --panel:#191325; --panel2:#241a36; --line:#352a4d; --txt:#efe9f7; --muted:#a596bd; --accent:#c07bff; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--txt);
+    font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  #app { display:grid; grid-template-columns:300px 1fr 290px; height:100vh; }
+  #side { background:var(--panel); border-right:1px solid var(--line); padding:16px; overflow-y:auto; }
+  #side h1 { font-size:15px; margin:0 0 2px; }
+  #side .sub { color:var(--muted); font-size:11px; margin-bottom:14px; }
+  .group { margin-bottom:18px; }
+  .group > label.h { display:block; font-weight:600; font-size:11px; letter-spacing:.04em;
+    text-transform:uppercase; color:var(--muted); margin-bottom:7px; }
+  select, button { background:var(--panel2); color:var(--txt); border:1px solid var(--line);
+    border-radius:7px; padding:7px 9px; font:inherit; width:100%; }
+  select:focus { outline:1px solid var(--accent); }
+  #legend { display:flex; flex-direction:column; gap:4px; }
+  #legend .row { display:flex; align-items:center; gap:8px; font-size:12px; text-transform:capitalize; }
+  #legend .sw { width:13px; height:13px; border-radius:3px; flex:none; }
+  #legend.grad .bar { height:12px; border-radius:4px; flex:1; }
+  #legend .gradlabels { display:flex; justify-content:space-between; color:var(--muted); font-size:11px; }
+  .stat { color:var(--muted); font-size:11px; margin-top:6px; }
+  .btnrow { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { cursor:pointer; width:auto; padding:5px 9px; font-size:11.5px; border-radius:20px; }
+  .chip:hover { border-color:var(--accent); }
+  #hyblist { border:1px solid var(--line); border-radius:8px; padding:6px 8px; background:var(--panel2);
+    display:grid; grid-template-columns:1fr 1fr; gap:1px 10px; max-height:230px; overflow-y:auto; }
+  #hyblist label { display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; text-transform:capitalize; padding:2px 0; }
+  #hyblist input { accent-color:var(--accent); margin:0; }
+  .toggle { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; padding:6px 0; }
+  .toggle input { accent-color:var(--accent); width:auto; }
+  #panes { display:grid; grid-template-columns:1fr 1fr; height:100vh; }
+  .pane { position:relative; overflow:hidden; }
+  .pane:first-child { border-right:1px solid var(--line); }
+  .pane canvas { display:block; width:100%; height:100%; cursor:crosshair; }
+  .pane .ttl { position:absolute; left:14px; top:11px; font-weight:600; font-size:13px; pointer-events:none;
+    background:rgba(14,11,22,.72); padding:4px 9px; border-radius:7px; }
+  .pane .ttl small { color:var(--muted); font-weight:400; }
+  .pane .ax { position:absolute; color:var(--muted); font-size:10.5px; pointer-events:none; background:rgba(14,11,22,.6); padding:2px 6px; border-radius:5px; }
+  .pane .lk { position:absolute; right:12px; top:11px; font-size:11px; color:var(--accent); pointer-events:none;
+    background:rgba(14,11,22,.72); padding:4px 9px; border-radius:7px; display:none; }
+  #detail { background:var(--panel); border-left:1px solid var(--line); overflow-y:auto; padding:14px; }
+  #detail .empty { color:var(--muted); font-size:12px; margin-top:8px; }
+  #card { display:none; } #card.show { display:block; }
+  #card img { width:100%; aspect-ratio:1; background:#fff; border-radius:8px; display:block; }
+  #card .cat { font-weight:600; margin:9px 0 2px; font-size:15px; text-transform:capitalize; }
+  #card .kind { font-size:11px; color:var(--muted); margin-bottom:8px; }
+  #card table { width:100%; border-collapse:collapse; margin-top:6px; font-size:12px; }
+  #card td { padding:2px 0; } #card td.k { color:var(--muted); } #card td.v { text-align:right; font-variant-numeric:tabular-nums; }
+  #card tr.sec td { color:var(--accent); font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; padding-top:8px; }
+  .blendbar { height:9px; border-radius:6px; background:linear-gradient(90deg,#3aa0ff,#ff7b3a); position:relative; margin:7px 0 3px; }
+  .blendbar .pin { position:absolute; top:-3px; width:4px; height:15px; border-radius:2px; background:#fff; transform:translateX(-2px); }
+  .ends { display:flex; justify-content:space-between; font-size:10.5px; color:var(--muted); text-transform:capitalize; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <h1>🧬 Hybrid Drawing Explorer</h1>
+    <div class="sub">Children's drawings of <b>hybrid concepts</b> ("a bike bee", "a tiger frog"…) and their pure constituents, in CLIP space. <span id="count"></span></div>
+
+    <div class="group">
+      <label class="h" for="colorby">Color by</label>
+      <select id="colorby">
+        <option value="kind">Hybrid vs pure</option>
+        <option value="hyb">Hybrid category</option>
+        <option value="w">Interpolation weight (blend)</option>
+        <option value="residual">Residual (emergent features)</option>
+        <option value="winner">Which constituent it favors</option>
+      </select>
+      <div id="legend" class="group" style="margin-top:11px;"></div>
+    </div>
+
+    <div class="group">
+      <label class="h">Hybrid categories <span id="hybCount" style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;"></span></label>
+      <div class="btnrow" style="margin-bottom:6px;">
+        <button class="chip" data-act="all">All</button>
+        <button class="chip" data-act="none">None</button>
+      </div>
+      <div id="hyblist"></div>
+    </div>
+
+    <div class="group">
+      <label class="toggle"><input type="checkbox" id="showPure" checked /> Show pure constituent drawings (UMAP)</label>
+    </div>
+
+    <div class="group"><button id="reset" style="cursor:pointer;">Reset view</button></div>
+    <div class="stat" id="visStat"></div>
+    <div class="stat" style="margin-top:12px;">Left: UMAP of CLIP (ViT-B-32) embeddings of every drawing. Right: each hybrid placed on a constituent-1 ↔ constituent-2 axis (how it blends the two) vs residual distance (features off the line between them). Drag to pan · scroll to zoom · hover for the drawing · click to pin.</div>
+  </aside>
+
+  <main id="panes">
+    <div class="pane" id="paneU">
+      <canvas></canvas>
+      <div class="ttl">🗺️ UMAP — all drawings <small id="cntU"></small></div>
+      <div class="lk">↔ same drawing</div>
+    </div>
+    <div class="pane" id="paneI">
+      <canvas></canvas>
+      <div class="ttl">⟷ Interpolation — hybrids <small id="cntI"></small></div>
+      <div class="lk">↔ same drawing</div>
+      <div class="ax" style="left:14px;bottom:10px;">← looks like constituent 1</div>
+      <div class="ax" style="right:14px;bottom:10px;">constituent 2 →</div>
+      <div class="ax" style="left:14px;top:40px;">↑ residual (emergent)</div>
+    </div>
+  </main>
+
+  <aside id="detail">
+    <label class="h" style="font-weight:600;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);">Selected drawing</label>
+    <div class="empty" id="detailEmpty">Hover a point in either panel to see the drawing and its blend.</div>
+    <div id="card">
+      <img id="cardImg" alt="" />
+      <div class="cat" id="cardCat"></div>
+      <div class="kind" id="cardKind"></div>
+      <div id="cardBody"></div>
+    </div>
+  </aside>
+</div>
+
+<script>
+const IMG_BASE_FALLBACKS=["./","","../"];
+let ALL=null, D=null, IMG_BASE="./", HYB=[];
+const NODATA="#3a3350";
+const card=document.getElementById("card");
+
+function lerp(a,b,t){return a+(b-a)*t;}
+const VIRIDIS=[[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];
+const MAGMA=[[13,8,38],[81,18,124],[183,55,121],[252,137,97],[252,253,191]];
+function ramp(stops,t){t=Math.max(0,Math.min(1,t));const s=t*(stops.length-1);const i=Math.floor(s),f=s-i;
+  const a=stops[i],b=stops[Math.min(i+1,stops.length-1)];
+  return `rgb(${Math.round(lerp(a[0],b[0],f))},${Math.round(lerp(a[1],b[1],f))},${Math.round(lerp(a[2],b[2],f))})`;}
+function hybColor(i){return `hsl(${(i*360/16+15)%360},65%,62%)`;}
+function diverge(t){ // 0 -> blue (c1), 1 -> orange (c2)
+  return t<0.5 ? ramp([[58,160,255],[150,150,170]], t*2) : ramp([[150,150,170],[255,123,58]], (t-0.5)*2); }
+
+const F={ hyb:new Set(), showPure:true };
+let colorMode="kind";
+const NULLABLE={w:1, residual:1, winner:1};   // pures have no value -> faint
+function val(i){ // metric value for current mode, or null
+  switch(colorMode){
+    case "kind": return D.kind[i];
+    case "hyb": return D.kind[i] ? D.hyb[i] : null;
+    case "w": return D.w[i];
+    case "residual": return D.residual[i];
+    case "winner": return D.w[i];   // 0..1 toward constituent 2
+  }
+}
+let RES_LO=0, RES_HI=1;
+function colorOf(i){
+  switch(colorMode){
+    case "kind": return D.kind[i] ? "#ff8a4c" : "#5a6b9c";
+    case "hyb": return D.kind[i] ? hybColor(D.hyb[i]) : null;
+    case "w": { const v=D.w[i]; return v==null?null:ramp(VIRIDIS,v); }
+    case "residual": { const v=D.residual[i]; return v==null?null:ramp(MAGMA,(v-RES_LO)/(RES_HI-RES_LO)); }
+    case "winner": { const v=D.w[i]; return v==null?null:diverge(v); }
+  }
+}
+// pures gated only by showPure; hybrids gated by the hybrid-category filter
+function show(i){
+  if(D.kind[i]===0) return F.showPure;
+  return F.hyb.size===0 || F.hyb.has(D.hyb[i]);
+}
+
+let selIdx=-1, pinned=false, lastPane="U";
+class Pane{
+  constructor(id,xk,yk,hybridOnly){ this.root=document.getElementById(id); this.xk=xk; this.yk=yk; this.hybridOnly=hybridOnly;
+    this.cv=this.root.querySelector("canvas"); this.ctx=this.cv.getContext("2d"); this.lk=this.root.querySelector(".lk");
+    this.scale=1; this.tx=0; this.ty=0; this.fit={s:1,ox:0,oy:0}; this.drag=false; this.moved=false; this.bind(); }
+  vis(i){ if(this.hybridOnly && D.kind[i]===0) return false; if(this.hybridOnly && D[this.xk][i]==null) return false; return show(i); }
+  W(){return this.cv.clientWidth;} H(){return this.cv.clientHeight;}
+  resize(){ const r=this.cv.parentElement.getBoundingClientRect(), dpr=window.devicePixelRatio||1;
+    this.cv.width=r.width*dpr; this.cv.height=r.height*dpr; this.cv.style.width=r.width+"px"; this.cv.style.height=r.height+"px";
+    this.ctx.setTransform(dpr,0,0,dpr,0,0);
+    const pad=46, s=Math.min((r.width-2*pad)/1000,(r.height-2*pad)/1000);
+    this.fit={s,ox:(r.width-1000*s)/2,oy:(r.height-1000*s)/2}; this.draw(); }
+  S(x,y){return [ (x*this.fit.s+this.fit.ox)*this.scale+this.tx, (y*this.fit.s+this.fit.oy)*this.scale+this.ty ];}
+  draw(){ const ctx=this.ctx,w=this.W(),h=this.H(); ctx.clearRect(0,0,w,h);
+    const r=Math.max(1.3,Math.min(4.4,1.2*this.scale)), nullable=NULLABLE[colorMode];
+    if(nullable && !this.hybridOnly){ ctx.globalAlpha=0.14; ctx.fillStyle=NODATA;
+      for(let i=0;i<D.n;i++){ if(!this.vis(i)||val(i)!=null) continue; const [sx,sy]=this.S(D[this.xk][i],D[this.yk][i]);
+        if(sx<-4||sy<-4||sx>w+4||sy>h+4) continue; ctx.beginPath(); ctx.arc(sx,sy,r,0,6.283); ctx.fill(); } }
+    ctx.globalAlpha=0.85;
+    for(let i=0;i<D.n;i++){ if(!this.vis(i)) continue; const col=colorOf(i); if(col===null) continue;
+      const [sx,sy]=this.S(D[this.xk][i],D[this.yk][i]); if(sx<-4||sy<-4||sx>w+4||sy>h+4) continue;
+      ctx.fillStyle=col; ctx.beginPath(); ctx.arc(sx,sy,r,0,6.283); ctx.fill(); }
+    ctx.globalAlpha=1;
+    if(selIdx>=0 && this.vis(selIdx)){ const [sx,sy]=this.S(D[this.xk][selIdx],D[this.yk][selIdx]);
+      this.lk.style.display="block";
+      ctx.beginPath(); ctx.arc(sx,sy,7,0,6.283); ctx.strokeStyle=pinned?"#fff":"#e8d9ff"; ctx.lineWidth=2.5; ctx.stroke();
+      const c=colorOf(selIdx); ctx.beginPath(); ctx.arc(sx,sy,5,0,6.283); ctx.fillStyle=c||NODATA; ctx.fill();
+    } else this.lk.style.display="none";
+  }
+  nearest(px,py){ let best=-1,bd=14*14; for(let i=0;i<D.n;i++){ if(!this.vis(i)) continue;
+    const [sx,sy]=this.S(D[this.xk][i],D[this.yk][i]); const dx=sx-px,dy=sy-py,d=dx*dx+dy*dy; if(d<bd){bd=d;best=i;} } return best; }
+  bind(){
+    this.cv.addEventListener("mousedown",e=>{this.drag=true;this.moved=false;this.lx=e.clientX;this.ly=e.clientY;});
+    window.addEventListener("mouseup",()=>{this.drag=false;});
+    this.cv.addEventListener("mousemove",e=>{ const rect=this.cv.getBoundingClientRect(), px=e.clientX-rect.left, py=e.clientY-rect.top;
+      if(this.drag){ const dx=e.clientX-this.lx,dy=e.clientY-this.ly; if(Math.abs(dx)+Math.abs(dy)>2)this.moved=true;
+        this.tx+=dx;this.ty+=dy;this.lx=e.clientX;this.ly=e.clientY;this.draw();return; }
+      lastPane=this.hybridOnly?"I":"U"; if(pinned) return;
+      const hh=this.nearest(px,py); if(hh!==selIdx){ selIdx=hh; drawAll(); if(hh>=0) showCard(hh); else hideCard(); } });
+    this.cv.addEventListener("click",e=>{ if(this.moved) return; const rect=this.cv.getBoundingClientRect();
+      const hh=this.nearest(e.clientX-rect.left,e.clientY-rect.top);
+      if(hh>=0){ selIdx=hh; pinned=true; showCard(hh); drawAll(); } else { pinned=false; selIdx=-1; hideCard(); drawAll(); } });
+    this.cv.addEventListener("wheel",e=>{ e.preventDefault(); const rect=this.cv.getBoundingClientRect(), px=e.clientX-rect.left, py=e.clientY-rect.top;
+      const f=Math.exp(-e.deltaY*0.0015); this.tx=px-(px-this.tx)*f; this.ty=py-(py-this.ty)*f; this.scale*=f;
+      this.scale=Math.max(0.4,Math.min(60,this.scale)); this.draw(); },{passive:false}); }
+  reset(){ this.scale=1; this.tx=0; this.ty=0; this.resize(); }
+}
+let PU, PI;
+function drawAll(){ PU.draw(); PI.draw(); }
+
+function fmt(v,d=2){ return (v==null||isNaN(v))?"—":(+v).toFixed(d); }
+function showCard(i){
+  card.classList.add("show"); document.getElementById("detailEmpty").style.display="none";
+  document.getElementById("cardImg").src=IMG_BASE+ALL.draw_dir+"/"+D.file[i];
+  document.getElementById("cardCat").textContent=D.cat[i];
+  document.getElementById("cardKind").textContent = D.kind[i] ? "hybrid concept" : "pure concept";
+  if(!D.kind[i]){ document.getElementById("cardBody").innerHTML=""; return; }
+  const w=D.w[i], c1=D.c1[i], c2=D.c2[i];
+  const favors = w<0.45?c1 : w>0.55?c2 : "both equally";
+  document.getElementById("cardBody").innerHTML=`
+    <div class="blendbar"><div class="pin" style="left:${Math.round(w*100)}%"></div></div>
+    <div class="ends"><span>${c1}</span><span>${c2}</span></div>
+    <table>
+      <tr class="sec"><td colspan="2">Interpolation</td></tr>
+      <tr><td class="k">blend weight</td><td class="v">${fmt(w,2)} <span class="k">(favors ${favors})</span></td></tr>
+      <tr><td class="k">residual (emergent)</td><td class="v">${fmt(D.residual[i],3)}</td></tr>
+      <tr class="sec"><td colspan="2">Similarity to constituents</td></tr>
+      <tr><td class="k">${c1}</td><td class="v">${fmt(D.sim1[i],3)}</td></tr>
+      <tr><td class="k">${c2}</td><td class="v">${fmt(D.sim2[i],3)}</td></tr>
+    </table>`;
+}
+function hideCard(){ card.classList.remove("show"); document.getElementById("detailEmpty").style.display="block"; }
+
+function buildLegend(){
+  const el=document.getElementById("legend");
+  const grad=(stops,lo,hi,nd)=>{ el.className="group grad";
+    el.innerHTML=`<div class="bar" style="background:linear-gradient(90deg,${stops})"></div>
+      <div class="gradlabels"><span>${lo}</span><span>${hi}</span></div>
+      ${nd?`<div class="row" style="margin-top:6px;"><span class="sw" style="background:${NODATA};opacity:.6"></span>pure drawings (no value)</div>`:''}`; };
+  const V=VIRIDIS.map(c=>`rgb(${c})`).join(","), M=MAGMA.map(c=>`rgb(${c})`).join(",");
+  if(colorMode==="kind"){ el.className="group";
+    el.innerHTML=`<div class="row"><span class="sw" style="background:#ff8a4c"></span>hybrid drawing</div>
+                  <div class="row"><span class="sw" style="background:#5a6b9c"></span>pure constituent</div>`;
+  } else if(colorMode==="hyb"){ el.className="group";
+    el.innerHTML=HYB.map((h,i)=>`<div class="row"><span class="sw" style="background:${hybColor(i)}"></span>${h.replace(/^an? /,'')}</div>`).join("")
+      +`<div class="stat">pure drawings hidden in this mode</div>`;
+  } else if(colorMode==="w"){ grad(V,"← constituent 1","constituent 2 →",true);
+  } else if(colorMode==="residual"){ grad(M,"on the line","far off (emergent)",true);
+  } else if(colorMode==="winner"){ el.className="group grad";
+    el.innerHTML=`<div class="bar" style="background:linear-gradient(90deg,#3aa0ff,#9696aa,#ff7b3a)"></div>
+      <div class="gradlabels"><span>constituent 1</span><span>constituent 2</span></div>
+      <div class="row" style="margin-top:6px;"><span class="sw" style="background:${NODATA};opacity:.6"></span>pure drawings</div>`; }
+}
+
+function updateStat(){
+  let u=0, ih=0; for(let i=0;i<D.n;i++){ if(PU.vis(i))u++; if(PI.vis(i))ih++; }
+  document.getElementById("cntU").textContent=`· ${u} shown`;
+  document.getElementById("cntI").textContent=`· ${ih} hybrids`;
+  // mean blend + residual over visible hybrids
+  let n=0,sw=0,sr=0; for(let i=0;i<D.n;i++){ if(D.kind[i]&&show(i)){ n++; sw+=D.w[i]; sr+=D.residual[i]; } }
+  document.getElementById("visStat").textContent = n
+    ? `${n} hybrid drawings visible · mean blend ${(sw/n).toFixed(2)} · mean residual ${(sr/n).toFixed(3)}`
+    : `No hybrid drawings under the current filter.`;
+}
+
+function buildHybList(){
+  const list=document.getElementById("hyblist"); list.innerHTML="";
+  HYB.forEach((h,i)=>{ const lab=document.createElement("label");
+    lab.innerHTML=`<input type="checkbox" value="${i}" checked> ${h.replace(/^an? /,'')}`;
+    lab.querySelector("input").onchange=e=>{ if(e.target.checked)F.hyb.add(i); else F.hyb.delete(i);
+      document.getElementById("hybCount").textContent=`(${F.hyb.size===HYB.length?'all':F.hyb.size})`; drawAll(); updateStat(); };
+    list.appendChild(lab); });
+  document.querySelectorAll("#side .chip").forEach(b=>{ b.onclick=()=>{ const a=b.dataset.act;
+    if(a==="all") HYB.forEach((_,i)=>F.hyb.add(i)); else F.hyb.clear();
+    document.querySelectorAll("#hyblist input").forEach(cb=>cb.checked=F.hyb.has(+cb.value));
+    document.getElementById("hybCount").textContent=`(${F.hyb.size===HYB.length?'all':F.hyb.size||'none'})`; drawAll(); updateStat(); }; });
+}
+
+document.getElementById("colorby").onchange=e=>{colorMode=e.target.value;buildLegend();drawAll();updateStat();};
+document.getElementById("showPure").onchange=e=>{F.showPure=e.target.checked;drawAll();updateStat();};
+document.getElementById("reset").onclick=()=>{PU.reset();PI.reset();};
+window.addEventListener("resize",()=>{PU.resize();PI.resize();});
+
+async function load(){
+  ALL=await (await fetch("points.json")).json();
+  D=ALL.items; HYB=ALL.hybrids;
+  RES_LO=Math.min(...D.residual.filter(v=>v!=null)); RES_HI=Math.max(...D.residual.filter(v=>v!=null));
+  HYB.forEach((_,i)=>F.hyb.add(i));
+  document.getElementById("count").textContent=`${ALL.n_hybrid} hybrid + ${ALL.n_pure} pure drawings · ${HYB.length} hybrid concepts.`;
+  document.getElementById("hybCount").textContent=`(all)`;
+  PU=new Pane("paneU","ux","uy",false); PI=new Pane("paneI","ix","iy",true);
+  buildHybList(); buildLegend();
+  await probeBase(); PU.resize(); PI.resize(); updateStat();
+}
+function probeBase(){ return new Promise(res=>{ let k=0; const f0=D.file[0];
+  const t=()=>{ if(k>=IMG_BASE_FALLBACKS.length){res();return;} const im=new Image();
+    im.onload=()=>{IMG_BASE=IMG_BASE_FALLBACKS[k];res();}; im.onerror=()=>{k++;t();};
+    im.src=IMG_BASE_FALLBACKS[k]+ALL.draw_dir+"/"+f0; }; t(); }); }
+load();
+</script>
+</body>
+</html>
