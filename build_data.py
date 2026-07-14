@@ -37,24 +37,32 @@ random.seed(0)
 HERE = os.path.dirname(os.path.abspath(__file__))
 DRAW_DIR = os.path.join(HERE, "drawings")
 DB = "kiddraw"
-HYBRID_COLL = "cdm_hybrid_v1"
+HYBRID_COLLS = ["cdm_hybrid_v1", "SONA_hybrid_run_v1"]   # both hybrid collections
 PURE_COLLS = ["cdm_run_v8", "cdm_run_v7", "cdm_run_v6", "cdm_run_v5", "cdm_run_v4",
               "cdm_run_v3", "cdm_run_v2", "Bing_run_v4", "india_run_v1", "SONA_hybrid_run_v1"]
-CONTROLS = {"square", "shape", "this square", "copied_square", "traced_square", "a dog"}
+CONTROLS = {"square", "shape", "this square", "copied_square", "traced_square"}
 
-USABLE_HYBRIDS = ["a train cat", "a bike bee", "a mushroom house", "a rabbit boat",
-                  "a sheep fish", "a dinosaur truck", "an elephant snail", "a tiger frog"]
-DUR_MIN, INK_MAX = 2.0, 0.15
-SAMPLE_HYBRID, SAMPLE_PURE = 200, 120     # per concept
-
-
-def article(w):
-    return ("an " if w[0].lower() in "aeiou" else "a ") + w
+# all 17 hybrids across both experiment stim sets, with explicit constituents
+# (explicit map needed because "an ice cream hat" doesn't word-split cleanly).
+HYBRID_MAP = {
+    "a train cat": ("a train", "a cat"), "a bike bee": ("a bike", "a bee"),
+    "a mushroom house": ("a mushroom", "a house"), "a rabbit boat": ("a rabbit", "a boat"),
+    "a sheep fish": ("a sheep", "a fish"), "a dinosaur truck": ("a dinosaur", "a truck"),
+    "an elephant snail": ("an elephant", "a snail"), "a tiger frog": ("a tiger", "a frog"),
+    "a cow whale": ("a cow", "a whale"), "a bear tree": ("a bear", "a tree"),
+    "an airplane lamp": ("an airplane", "a lamp"), "a horse car": ("a horse", "a car"),
+    "an ice cream hat": ("an ice cream", "a hat"), "a phone bird": ("a phone", "a bird"),
+    "a spider watch": ("a spider", "a watch"), "an octopus cup": ("an octopus", "a cup"),
+    "a camel dog": ("a camel", "a dog"),
+}
+USABLE_HYBRIDS = list(HYBRID_MAP)
+DUR_MIN, INK_MIN, INK_MAX = 2.0, 0.01, 0.15   # drop blank (<1% ink) and scribbles
+SAMPLE_HYBRID, SAMPLE_PURE = 200, 110     # per concept
+EMB_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".emb_cache.npz")
 
 
 def constituents(h):
-    t = h.split()
-    return article(t[1]), article(t[2])
+    return HYBRID_MAP[h]
 
 
 def age_num(a):
@@ -94,21 +102,26 @@ def ink_density(rgba):
     return float((g < 250).sum()) / g.size
 
 
-def collect(coll, categories, sample_n, kind):
-    """Dedup latest per (sessionId,category) with the duration filter (cheap, no
-    decode); then for each category shuffle and lazily decode candidates until
-    sample_n pass the ink filter — so we never decode the whole collection."""
+def collect(colls, categories, sample_n, kind):
+    """Aggregate across one or more collections. Dedup latest per
+    (sessionId,category) with the duration filter (cheap, no decode); then per
+    category shuffle and lazily decode candidates, keeping ones whose ink
+    density is in [INK_MIN, INK_MAX] (drops blanks and scribbles), up to
+    sample_n. Never decodes the whole collection."""
+    if not isinstance(colls, (list, tuple)):
+        colls = [colls]
     by_cat = {c: {} for c in categories}
-    cur = coll.find({"dataType": "finalImage", "category": {"$in": list(categories)}},
-                    {"imgData": 1, "category": 1, "sessionId": 1, "trialNum": 1,
-                     "startTrialTime": 1, "endTrialTime": 1, "age": 1})
-    for d in cur:
-        st, et = d.get("startTrialTime"), d.get("endTrialTime")
-        if st and et and (et - st) / 1000.0 < DUR_MIN:   # only filter when timed
-            continue
-        prev = by_cat[d["category"]].get(d.get("sessionId"))
-        if prev is None or (d.get("endTrialTime") or 0) >= (prev.get("endTrialTime") or 0):
-            by_cat[d["category"]][d.get("sessionId")] = d
+    for coll in colls:
+        cur = coll.find({"dataType": "finalImage", "category": {"$in": list(categories)}},
+                        {"imgData": 1, "category": 1, "sessionId": 1, "trialNum": 1,
+                         "startTrialTime": 1, "endTrialTime": 1, "age": 1})
+        for d in cur:
+            st, et = d.get("startTrialTime"), d.get("endTrialTime")
+            if st and et and (et - st) / 1000.0 < DUR_MIN:   # only filter when timed
+                continue
+            prev = by_cat[d["category"]].get(d.get("sessionId"))
+            if prev is None or (d.get("endTrialTime") or 0) >= (prev.get("endTrialTime") or 0):
+                by_cat[d["category"]][d.get("sessionId")] = d
     out = []
     for cat, docs in by_cat.items():
         cands = list(docs.values()); random.shuffle(cands)
@@ -118,7 +131,8 @@ def collect(coll, categories, sample_n, kind):
                 break
             try:
                 rgba = decode(d)
-                if ink_density(rgba) > INK_MAX:
+                dink = ink_density(rgba)
+                if dink < INK_MIN or dink > INK_MAX:     # blank or scribble
                     continue
             except Exception:
                 continue
@@ -139,8 +153,8 @@ def main():
     pures = sorted({c for h in USABLE_HYBRIDS for c in constituents(h)})
     print(f"{len(USABLE_HYBRIDS)} hybrids, {len(pures)} pure constituents")
 
-    # ---- hybrids ----
-    items = collect(db[HYBRID_COLL], set(USABLE_HYBRIDS), SAMPLE_HYBRID, 1)
+    # ---- hybrids (from both hybrid collections) ----
+    items = collect([db[c] for c in HYBRID_COLLS], set(USABLE_HYBRIDS), SAMPLE_HYBRID, 1)
     print(f"hybrids after filter+sample: {len(items)}")
 
     # ---- pures: aggregate across kiddraw runs until each concept hits the cap ----
@@ -158,13 +172,23 @@ def main():
     items += pure_items
     print(f"total drawings: {len(items)}  ({sum(i['kind'] for i in items)} hybrid)")
 
-    # ---- embed ----
-    embs = []
+    # ---- embed (cached by filename so re-runs after a filter tweak are fast) ----
+    cache = {}
+    if os.path.exists(EMB_CACHE):
+        z = np.load(EMB_CACHE, allow_pickle=True)
+        cache = {f: e for f, e in zip(z["files"], z["embs"])}
+    embs, hits = [], 0
     for j, it in enumerate(items):
-        embs.append(clip_lib.image_embedding(os.path.join(DRAW_DIR, it["file"])))
+        f = it["file"]
+        if f in cache:
+            embs.append(cache[f]); hits += 1
+        else:
+            e = clip_lib.image_embedding(os.path.join(DRAW_DIR, f)); cache[f] = e; embs.append(e)
         if (j + 1) % 300 == 0:
-            print(f"    embedded {j+1}/{len(items)}")
+            print(f"    embedded {j+1}/{len(items)} ({hits} cached)")
     E = np.array(embs)
+    np.savez(EMB_CACHE, files=np.array(list(cache.keys())), embs=np.array(list(cache.values())))
+    print(f"  {hits}/{len(items)} embeddings from cache")
 
     # ---- centroids + interpolation ----
     cent = {}

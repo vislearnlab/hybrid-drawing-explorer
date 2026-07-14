@@ -3,3 +3,4 @@ auth.txt
 .DS_Store
 __pycache__/
 *.pyc
+.emb_cache.npz

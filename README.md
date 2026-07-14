@@ -1,8 +1,7 @@
 # Hybrid Drawing Explorer
 
 An interactive web page for exploring children's drawings of **hybrid concepts** —
-blends of two familiar things, like *"a bike bee"*, *"a tiger frog"*, or
-*"a mushroom house"* — alongside the **pure constituent** drawings, in CLIP
+blends of two familiar things — 17 of them (bike bee, tiger frog, ice cream hat, octopus cup, …) — alongside the pure constituent drawings, in CLIP
 embedding space. Companion to
 [`exploratory-drawing-analysis`](https://github.com/vislearnlab/exploratory-drawing-analysis),
 built in the style of the lab's other drawing explorers.

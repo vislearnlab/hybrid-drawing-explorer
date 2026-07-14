@@ -144,7 +144,7 @@ const MAGMA=[[13,8,38],[81,18,124],[183,55,121],[252,137,97],[252,253,191]];
 function ramp(stops,t){t=Math.max(0,Math.min(1,t));const s=t*(stops.length-1);const i=Math.floor(s),f=s-i;
   const a=stops[i],b=stops[Math.min(i+1,stops.length-1)];
   return `rgb(${Math.round(lerp(a[0],b[0],f))},${Math.round(lerp(a[1],b[1],f))},${Math.round(lerp(a[2],b[2],f))})`;}
-function hybColor(i){return `hsl(${(i*360/16+15)%360},65%,62%)`;}
+function hybColor(i){const n=(HYB&&HYB.length)||17;return `hsl(${(i*360/n+15)%360},65%,62%)`;}
 function diverge(t){ // 0 -> blue (c1), 1 -> orange (c2)
   return t<0.5 ? ramp([[58,160,255],[150,150,170]], t*2) : ramp([[150,150,170],[255,123,58]], (t-0.5)*2); }
 
