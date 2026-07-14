@@ -2,177 +2,213 @@
 """
 Build drawings/ + points.json for the Hybrid Drawing Explorer.
 
-Children were asked to draw HYBRID concepts ("a bike bee", "a tiger frog", ...)
-— each a blend of two familiar concepts — plus the pure constituent concepts.
-This explorer shows, side by side:
+Data, rebuilt from MongoDB (the committed analysis CSVs are anonymized):
 
-  * a UMAP of CLIP embeddings of every drawing (hybrids + pure constituents), and
-  * an interpolation view: each hybrid drawing placed on a constituent-1 ↔
-    constituent-2 axis (how much it blends the two) vs its residual distance
-    (how far it sits off the line between them — i.e. emergent features).
+  * HYBRID drawings  — kiddraw.cdm_hybrid_v1, the 8 "usable" hybrid concepts
+    whose constituents both exist as pure kiddraw concepts
+    (train cat, bike bee, mushroom house, rabbit boat, sheep fish,
+     dinosaur truck, elephant snail, tiger frog). Each finalImage carries `age`.
+  * PURE constituent drawings — the 16 constituents, pulled from the kiddraw
+    cdm_run_v3..v8 collections (the ~37k object-drawing dataset).
 
-Everything is rebuilt from the `kiddraw.SONA_hybrid_run_v1` MongoDB collection
-(the committed analysis CSVs are anonymized and don't map back to images):
+Quality filters mirror exploratory-drawing-analysis/01_data_preparation:
+  - drop control items (square / shape / a dog / …)
+  - draw_duration = (endTrialTime - startTrialTime)/1000  >= 2.0 s
+  - ink_density = fraction of pixels < 250 on white  <= 0.15  (drop scribbles)
+  - dedup to one finalImage per (sessionId, category), keeping the latest
+Then sample per concept to keep the page light. Transparent PNGs are saved.
 
-  1. pull every finalImage for the 16 hybrid categories + their pure constituents
-  2. CLIP-embed each (OpenCLIP ViT-B-32) and save the PNG
-  3. pure-concept centroid = mean adult/child embedding per concept
-  4. per hybrid drawing d with constituent centroids c1, c2:
-       w        = clip01( (d-c1)·(c2-c1) / |c2-c1|² )     (interpolation weight)
-       residual = || d - (c1 + w·(c2-c1)) ||              (off-line distance)
-       sim1,sim2= cosine(d, c1), cosine(d, c2)
-  5. UMAP(cosine) of all embeddings → 2-D map
-
-Mongo creds via SEA_MONGO_URI or auth.txt (git-ignored).
+For each hybrid drawing d with constituent centroids c1, c2 (mean pure embedding):
+  w        = clip01((d-c1)·(c2-c1)/|c2-c1|²)   residual = ||d-(c1+w(c2-c1))||
+Both UMAP(cosine) and t-SNE layouts are computed (toggle in the page).
 
     SEA_MONGO_URI='mongodb://user:pass@host:27017/?authSource=admin' python3 build_data.py
 """
-import os, io, csv, json, base64, re
+import os, io, json, base64, re, random
 
 import numpy as np
 from PIL import Image
 import umap
+from sklearn.manifold import TSNE
 
 import clip_lib
 
+random.seed(0)
 HERE = os.path.dirname(os.path.abspath(__file__))
 DRAW_DIR = os.path.join(HERE, "drawings")
-DB_NAME, COLL = "kiddraw", "SONA_hybrid_run_v1"
-EXCLUDE = {"an ice cream"}          # 3 tokens but a single concept, not a hybrid
+DB = "kiddraw"
+HYBRID_COLL = "cdm_hybrid_v1"
+PURE_COLLS = ["cdm_run_v8", "cdm_run_v7", "cdm_run_v6", "cdm_run_v5", "cdm_run_v4",
+              "cdm_run_v3", "cdm_run_v2", "Bing_run_v4", "india_run_v1", "SONA_hybrid_run_v1"]
+CONTROLS = {"square", "shape", "this square", "copied_square", "traced_square", "a dog"}
+
+USABLE_HYBRIDS = ["a train cat", "a bike bee", "a mushroom house", "a rabbit boat",
+                  "a sheep fish", "a dinosaur truck", "an elephant snail", "a tiger frog"]
+DUR_MIN, INK_MAX = 2.0, 0.15
+SAMPLE_HYBRID, SAMPLE_PURE = 200, 120     # per concept
 
 
-def article(word):
-    return ("an " if word[0].lower() in "aeiou" else "a ") + word
+def article(w):
+    return ("an " if w[0].lower() in "aeiou" else "a ") + w
 
 
-def constituents(hybrid_cat):
-    """'a bike bee' -> ('a bike', 'a bee'); 'an elephant snail' -> ('an elephant','a snail')."""
-    toks = hybrid_cat.split()
-    return article(toks[1]), article(toks[2])
+def constituents(h):
+    t = h.split()
+    return article(t[1]), article(t[2])
 
 
-def mongo_coll():
+def age_num(a):
+    if a is None:
+        return None
+    if str(a).lower() == "adult":
+        return 18
+    m = re.search(r"(\d+)", str(a))
+    return int(m.group(1)) if m else None
+
+
+def mongo():
     from pymongo import MongoClient
     uri = os.environ.get("SEA_MONGO_URI")
     if not uri and os.path.exists(os.path.join(HERE, "auth.txt")):
         uri = open(os.path.join(HERE, "auth.txt")).readline().strip()
     if not uri:
-        raise SystemExit("Set SEA_MONGO_URI or create auth.txt with the connection string.")
-    return MongoClient(uri, serverSelectionTimeoutMS=10000)[DB_NAME][COLL]
+        raise SystemExit("Set SEA_MONGO_URI or auth.txt")
+    return MongoClient(uri, serverSelectionTimeoutMS=10000)[DB]
 
 
 def slug(s):
-    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+    return re.sub(r"[^a-z0-9]+", "-", str(s).lower()).strip("-")
 
 
-def save_png(doc, path):
+def decode(doc):
     raw = doc["imgData"]
     if raw.startswith("data:"):
         raw = raw.split(",", 1)[1]
-    img = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGBA")
-    bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
-    bg.alpha_composite(img)
-    bg.convert("RGB").save(path, "PNG")
+    return Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGBA")
 
 
-def scale01(v, lo, hi, a=40, b=960):
-    return a + (v - lo) / (hi - lo + 1e-9) * (b - a)
+def ink_density(rgba):
+    bg = Image.new("RGB", rgba.size, (255, 255, 255))
+    bg.paste(rgba, mask=rgba.split()[3])
+    g = np.asarray(bg.convert("L"))
+    return float((g < 250).sum()) / g.size
+
+
+def collect(coll, categories, sample_n, kind):
+    """Dedup latest per (sessionId,category) with the duration filter (cheap, no
+    decode); then for each category shuffle and lazily decode candidates until
+    sample_n pass the ink filter — so we never decode the whole collection."""
+    by_cat = {c: {} for c in categories}
+    cur = coll.find({"dataType": "finalImage", "category": {"$in": list(categories)}},
+                    {"imgData": 1, "category": 1, "sessionId": 1, "trialNum": 1,
+                     "startTrialTime": 1, "endTrialTime": 1, "age": 1})
+    for d in cur:
+        st, et = d.get("startTrialTime"), d.get("endTrialTime")
+        if st and et and (et - st) / 1000.0 < DUR_MIN:   # only filter when timed
+            continue
+        prev = by_cat[d["category"]].get(d.get("sessionId"))
+        if prev is None or (d.get("endTrialTime") or 0) >= (prev.get("endTrialTime") or 0):
+            by_cat[d["category"]][d.get("sessionId")] = d
+    out = []
+    for cat, docs in by_cat.items():
+        cands = list(docs.values()); random.shuffle(cands)
+        kept = 0
+        for d in cands:
+            if kept >= sample_n:
+                break
+            try:
+                rgba = decode(d)
+                if ink_density(rgba) > INK_MAX:
+                    continue
+            except Exception:
+                continue
+            fname = f"{slug(cat)}_{slug(d.get('sessionId'))}_{d.get('trialNum')}.png"
+            rgba.save(os.path.join(DRAW_DIR, fname))     # transparent PNG
+            out.append(dict(cat=cat, file=fname, kind=kind, age=age_num(d.get("age"))))
+            kept += 1
+    return out
+
+
+def scale(v, lo, hi, a=40, b=960):
+    return round(a + (v - lo) / (hi - lo + 1e-9) * (b - a), 2)
 
 
 def main():
     os.makedirs(DRAW_DIR, exist_ok=True)
-    col = mongo_coll()
+    db = mongo()
+    pures = sorted({c for h in USABLE_HYBRIDS for c in constituents(h)})
+    print(f"{len(USABLE_HYBRIDS)} hybrids, {len(pures)} pure constituents")
 
-    cats = col.distinct("category", {"dataType": "finalImage"})
-    hybrids = sorted(c for c in cats if len(c.split()) == 3 and c not in EXCLUDE)
-    pures = sorted(c for c in cats if len(c.split()) == 2)
-    pureset = set(pures)
-    # keep only hybrids whose two constituents are both present as pure concepts
-    hybrids = [h for h in hybrids if all(c in pureset for c in constituents(h))]
-    needed_pures = sorted({c for h in hybrids for c in constituents(h)})
-    print(f"{len(hybrids)} hybrids, {len(needed_pures)} constituent pure concepts")
+    # ---- hybrids ----
+    items = collect(db[HYBRID_COLL], set(USABLE_HYBRIDS), SAMPLE_HYBRID, 1)
+    print(f"hybrids after filter+sample: {len(items)}")
 
-    # ---- pull + embed every drawing ----------------------------------------
-    items = []   # dicts with kind/cat/file/emb
-    seen = set()
-    want = hybrids + needed_pures
-    docs = col.find({"dataType": "finalImage", "category": {"$in": want}},
-                    {"imgData": 1, "category": 1, "sessionId": 1, "trialNum": 1})
-    for d in docs:
-        cat = d["category"]
-        key = (d.get("sessionId"), d.get("trialNum"), cat)
-        if key in seen:
-            continue
-        seen.add(key)
-        fname = f"{slug(cat)}_{slug(str(d.get('sessionId')))}_{d.get('trialNum')}.png"
-        path = os.path.join(DRAW_DIR, fname)
-        try:
-            save_png(d, path)
-            emb = clip_lib.image_embedding(path)
-        except Exception as e:
-            continue
-        items.append(dict(cat=cat, file=fname, kind=1 if cat in set(hybrids) else 0, emb=emb))
-        if len(items) % 200 == 0:
-            print(f"    embedded {len(items)} drawings")
-    print(f"{len(items)} drawings embedded")
+    # ---- pures: aggregate across kiddraw runs until each concept hits the cap ----
+    need = {p: SAMPLE_PURE for p in pures}
+    pure_items = []
+    for cn in PURE_COLLS:
+        want = [p for p, k in need.items() if k > 0]
+        if not want:
+            break
+        got = collect(db[cn], set(want), max(need.values()), 0)
+        for it in got:
+            if need[it["cat"]] > 0:
+                pure_items.append(it); need[it["cat"]] -= 1
+        print(f"  {cn}: +{len(got)} (remaining need: {sum(need.values())})")
+    items += pure_items
+    print(f"total drawings: {len(items)}  ({sum(i['kind'] for i in items)} hybrid)")
 
-    E = np.array([it["emb"] for it in items])
+    # ---- embed ----
+    embs = []
+    for j, it in enumerate(items):
+        embs.append(clip_lib.image_embedding(os.path.join(DRAW_DIR, it["file"])))
+        if (j + 1) % 300 == 0:
+            print(f"    embedded {j+1}/{len(items)}")
+    E = np.array(embs)
 
-    # ---- pure-concept centroids (normalized mean) --------------------------
+    # ---- centroids + interpolation ----
     cent = {}
-    for c in needed_pures:
-        idx = [i for i, it in enumerate(items) if it["kind"] == 0 and it["cat"] == c]
-        v = E[idx].mean(0)
-        cent[c] = v / (np.linalg.norm(v) + 1e-9)
-
-    # ---- interpolation weight + residual for each hybrid -------------------
-    for it in items:
+    for p in pures:
+        idx = [i for i, it in enumerate(items) if it["kind"] == 0 and it["cat"] == p]
+        v = E[idx].mean(0); cent[p] = v / (np.linalg.norm(v) + 1e-9)
+    for i, it in enumerate(items):
         if it["kind"] == 0:
-            it.update(c1="", c2="", w=None, residual=None, sim1=None, sim2=None)
+            it.update(c1="", c2="", w=None, residual=None, sim1=None, sim2=None, hyb=-1)
             continue
-        a1, a2 = constituents(it["cat"])
-        c1, c2 = cent[a1], cent[a2]
-        d = it["emb"]
-        v = c2 - c1
-        t = float((d - c1) @ v / (v @ v + 1e-9))
-        tc = min(1.0, max(0.0, t))
-        proj = c1 + tc * v
-        it.update(c1=a1, c2=a2, w=round(tc, 4),
-                  residual=round(float(np.linalg.norm(d - proj)), 4),
+        a1, a2 = constituents(it["cat"]); c1, c2 = cent[a1], cent[a2]; d = E[i]
+        v = c2 - c1; t = float((d - c1) @ v / (v @ v + 1e-9)); tc = min(1, max(0, t))
+        it.update(c1=a1, c2=a2, hyb=USABLE_HYBRIDS.index(it["cat"]),
+                  w=round(tc, 4), residual=round(float(np.linalg.norm(d - (c1 + tc * v))), 4),
                   sim1=round(float(d @ c1), 4), sim2=round(float(d @ c2), 4))
 
-    # ---- UMAP of all embeddings --------------------------------------------
-    print("UMAP on", E.shape, "...")
-    reducer = umap.UMAP(n_neighbors=15, min_dist=0.12, metric="cosine", random_state=42)
-    xy = reducer.fit_transform(E)
-    ux = [round(scale01(v, xy[:, 0].min(), xy[:, 0].max()), 2) for v in xy[:, 0]]
-    uy = [round(scale01(v, xy[:, 1].min(), xy[:, 1].max()), 2) for v in xy[:, 1]]
+    # ---- layouts: UMAP + t-SNE ----
+    print("UMAP ...")
+    u = umap.UMAP(n_neighbors=15, min_dist=0.12, metric="cosine", random_state=42).fit_transform(E)
+    print("t-SNE ...")
+    Xz = (E - E.mean(0)) / (E.std(0) + 1e-9)
+    ts = TSNE(n_components=2, perplexity=40, init="pca", learning_rate=200.0, random_state=0).fit_transform(Xz)
 
-    # ---- interpolation-view coords (hybrids only) --------------------------
     resid = [it["residual"] for it in items if it["kind"] == 1]
     rlo, rhi = min(resid), max(resid)
-
-    P = dict(file=[], cat=[], kind=[], hyb=[], c1=[], c2=[], w=[], residual=[],
-             sim1=[], sim2=[], ux=[], uy=[], ix=[], iy=[])
+    P = dict(file=[], cat=[], kind=[], hyb=[], age=[], c1=[], c2=[], w=[], residual=[],
+             sim1=[], sim2=[], ux=[], uy=[], tx=[], ty=[], ix=[], iy=[])
     for i, it in enumerate(items):
-        P["file"].append(it["file"]); P["cat"].append(it["cat"]); P["kind"].append(it["kind"])
-        P["hyb"].append(hybrids.index(it["cat"]) if it["kind"] == 1 else -1)
-        P["c1"].append(it["c1"]); P["c2"].append(it["c2"])
-        P["w"].append(it["w"]); P["residual"].append(it["residual"])
-        P["sim1"].append(it["sim1"]); P["sim2"].append(it["sim2"])
-        P["ux"].append(ux[i]); P["uy"].append(uy[i])
+        for k in ("file", "cat", "kind", "hyb", "age", "c1", "c2", "w", "residual", "sim1", "sim2"):
+            P[k].append(it[k])
+        P["ux"].append(scale(u[i, 0], u[:, 0].min(), u[:, 0].max()))
+        P["uy"].append(scale(u[i, 1], u[:, 1].min(), u[:, 1].max()))
+        P["tx"].append(scale(ts[i, 0], ts[:, 0].min(), ts[:, 0].max()))
+        P["ty"].append(scale(ts[i, 1], ts[:, 1].min(), ts[:, 1].max()))
         if it["kind"] == 1:
-            P["ix"].append(round(scale01(it["w"], 0, 1), 2))
-            P["iy"].append(round(scale01(it["residual"], rlo, rhi, 960, 40), 2))  # high residual = top
+            P["ix"].append(scale(it["w"], 0, 1)); P["iy"].append(scale(it["residual"], rlo, rhi, 960, 40))
         else:
             P["ix"].append(None); P["iy"].append(None)
     P["n"] = len(items)
 
-    out = dict(draw_dir="drawings", hybrids=hybrids, pures=needed_pures,
+    out = dict(draw_dir="drawings", hybrids=USABLE_HYBRIDS, pures=pures,
                n_hybrid=sum(P["kind"]), n_pure=P["n"] - sum(P["kind"]), items=P)
-    with open(os.path.join(HERE, "points.json"), "w") as f:
-        json.dump(out, f)
-    print(f"wrote points.json: {P['n']} drawings ({out['n_hybrid']} hybrid + {out['n_pure']} pure), "
+    json.dump(out, open(os.path.join(HERE, "points.json"), "w"))
+    print(f"wrote points.json: {P['n']} ({out['n_hybrid']} hybrid + {out['n_pure']} pure), "
           f"{len(os.listdir(DRAW_DIR))} PNGs")
 
 

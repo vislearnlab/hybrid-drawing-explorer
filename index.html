@@ -66,6 +66,14 @@
     <div class="sub">Children's drawings of <b>hybrid concepts</b> ("a bike bee", "a tiger frog"…) and their pure constituents, in CLIP space. <span id="count"></span></div>
 
     <div class="group">
+      <label class="h">Map layout</label>
+      <div class="btnrow" id="layoutToggle">
+        <button class="chip on" data-lay="umap">UMAP</button>
+        <button class="chip" data-lay="tsne">t-SNE</button>
+      </div>
+    </div>
+
+    <div class="group">
       <label class="h" for="colorby">Color by</label>
       <select id="colorby">
         <option value="kind">Hybrid vs pure</option>
@@ -73,6 +81,7 @@
         <option value="w">Interpolation weight (blend)</option>
         <option value="residual">Residual (emergent features)</option>
         <option value="winner">Which constituent it favors</option>
+        <option value="age">Producer age</option>
       </select>
       <div id="legend" class="group" style="margin-top:11px;"></div>
     </div>
@@ -98,7 +107,7 @@
   <main id="panes">
     <div class="pane" id="paneU">
       <canvas></canvas>
-      <div class="ttl">🗺️ UMAP — all drawings <small id="cntU"></small></div>
+      <div class="ttl"><span id="ttlU">🗺️ UMAP</span> — all drawings <small id="cntU"></small></div>
       <div class="lk">↔ same drawing</div>
     </div>
     <div class="pane" id="paneI">
@@ -140,7 +149,7 @@ function diverge(t){ // 0 -> blue (c1), 1 -> orange (c2)
   return t<0.5 ? ramp([[58,160,255],[150,150,170]], t*2) : ramp([[150,150,170],[255,123,58]], (t-0.5)*2); }
 
 const F={ hyb:new Set(), showPure:true };
-let colorMode="kind";
+let colorMode="kind", LAYOUT="umap";
 const NULLABLE={w:1, residual:1, winner:1};   // pures have no value -> faint
 function val(i){ // metric value for current mode, or null
   switch(colorMode){
@@ -149,6 +158,7 @@ function val(i){ // metric value for current mode, or null
     case "w": return D.w[i];
     case "residual": return D.residual[i];
     case "winner": return D.w[i];   // 0..1 toward constituent 2
+    case "age": return D.age[i];
   }
 }
 let RES_LO=0, RES_HI=1;
@@ -159,6 +169,7 @@ function colorOf(i){
     case "w": { const v=D.w[i]; return v==null?null:ramp(VIRIDIS,v); }
     case "residual": { const v=D.residual[i]; return v==null?null:ramp(MAGMA,(v-RES_LO)/(RES_HI-RES_LO)); }
     case "winner": { const v=D.w[i]; return v==null?null:diverge(v); }
+    case "age": { const v=D.age[i]; return v==null?null:(v>=18?"#ff5ec9":ramp(VIRIDIS,(v-2)/8)); }
   }
 }
 // pures gated only by showPure; hybrids gated by the hybrid-category filter
@@ -222,7 +233,8 @@ function showCard(i){
   card.classList.add("show"); document.getElementById("detailEmpty").style.display="none";
   document.getElementById("cardImg").src=IMG_BASE+ALL.draw_dir+"/"+D.file[i];
   document.getElementById("cardCat").textContent=D.cat[i];
-  document.getElementById("cardKind").textContent = D.kind[i] ? "hybrid concept" : "pure concept";
+  const ageTxt = D.age[i]==null ? "" : " · "+(D.age[i]>=18?"adult":"age "+D.age[i]);
+  document.getElementById("cardKind").textContent = (D.kind[i] ? "hybrid concept" : "pure concept") + ageTxt;
   if(!D.kind[i]){ document.getElementById("cardBody").innerHTML=""; return; }
   const w=D.w[i], c1=D.c1[i], c2=D.c2[i];
   const favors = w<0.45?c1 : w>0.55?c2 : "both equally";
@@ -258,7 +270,11 @@ function buildLegend(){
   } else if(colorMode==="winner"){ el.className="group grad";
     el.innerHTML=`<div class="bar" style="background:linear-gradient(90deg,#3aa0ff,#9696aa,#ff7b3a)"></div>
       <div class="gradlabels"><span>constituent 1</span><span>constituent 2</span></div>
-      <div class="row" style="margin-top:6px;"><span class="sw" style="background:${NODATA};opacity:.6"></span>pure drawings</div>`; }
+      <div class="row" style="margin-top:6px;"><span class="sw" style="background:${NODATA};opacity:.6"></span>pure drawings</div>`;
+  } else if(colorMode==="age"){ el.className="group grad";
+    el.innerHTML=`<div class="bar" style="background:linear-gradient(90deg,${V})"></div>
+      <div class="gradlabels"><span>age 2</span><span>age 10</span></div>
+      <div class="row" style="margin-top:6px;"><span class="sw" style="background:#ff5ec9"></span>adult</div>`; }
 }
 
 function updateStat(){
@@ -286,6 +302,13 @@ function buildHybList(){
 }
 
 document.getElementById("colorby").onchange=e=>{colorMode=e.target.value;buildLegend();drawAll();updateStat();};
+document.querySelectorAll("#layoutToggle .chip").forEach(b=>b.onclick=()=>{
+  LAYOUT=b.dataset.lay;
+  document.querySelectorAll("#layoutToggle .chip").forEach(c=>c.classList.toggle("on",c===b));
+  PU.xk = LAYOUT==="umap"?"ux":"tx"; PU.yk = LAYOUT==="umap"?"uy":"ty";
+  document.getElementById("ttlU").textContent = "🗺️ "+(LAYOUT==="umap"?"UMAP":"t-SNE");
+  PU.reset();
+});
 document.getElementById("showPure").onchange=e=>{F.showPure=e.target.checked;drawAll();updateStat();};
 document.getElementById("reset").onclick=()=>{PU.reset();PI.reset();};
 window.addEventListener("resize",()=>{PU.resize();PI.resize();});

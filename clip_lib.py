@@ -51,9 +51,18 @@ def anchor_feats(which):
 
 
 def image_embedding(path, content_crop=True):
-    """L2-normalized CLIP image embedding (512-d numpy) for one drawing PNG."""
+    """L2-normalized CLIP image embedding (512-d numpy) for one drawing PNG.
+    Transparent PNGs are flattened onto white first (else convert('RGB') turns
+    the transparent background black and every drawing looks identical)."""
     m = _load()
-    img = Image.open(path).convert("RGB")
+    img = Image.open(path)
+    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        rgba = img.convert("RGBA")
+        bg = Image.new("RGB", rgba.size, (255, 255, 255))
+        bg.paste(rgba, mask=rgba.split()[3])
+        img = bg
+    else:
+        img = img.convert("RGB")
     if content_crop:
         gray = np.asarray(img.convert("L"))
         ys, xs = np.where(gray < 250)  # non-white ink
