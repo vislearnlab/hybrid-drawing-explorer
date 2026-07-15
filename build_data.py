@@ -56,6 +56,14 @@ HYBRID_MAP = {
     "a camel dog": ("a camel", "a dog"),
 }
 USABLE_HYBRIDS = list(HYBRID_MAP)
+# the two experiment stim sets ("runs"). The FYP ranked each hybrid drawing
+# against ONLY the concepts in its own run (its set's constituents), not all 34.
+RUN_SETS = {
+    "A": ["a train cat", "a bike bee", "a mushroom house", "a rabbit boat",
+          "a sheep fish", "a dinosaur truck", "an elephant snail", "a tiger frog"],
+    "B": ["a cow whale", "a bear tree", "an airplane lamp", "a horse car",
+          "an ice cream hat", "a phone bird", "a spider watch", "an octopus cup", "a camel dog"],
+}
 DUR_MIN, INK_MIN, INK_MAX = 2.0, 0.01, 0.15   # drop blank (<1% ink) and scribbles
 SAMPLE_HYBRID, SAMPLE_PURE = 200, 110     # displayed per concept
 CENTROID_SAMPLE = 500                      # drawings per concept for the FYP centroid (embed-only)
@@ -240,26 +248,29 @@ def main():
         v = np.mean(pool, axis=0); cent[p] = v / (np.linalg.norm(v) + 1e-9)
         print(f"    centroid {p}: {len(pool)} drawings")
     np.savez(EMB_CACHE, files=np.array(list(cache.keys())), embs=np.array(list(cache.values())))
-    # matrix of all constituent centroids for k-way rank-ordering (the FYP metric)
-    concept_names = list(cent.keys())
-    cmat = np.array([cent[c] for c in concept_names])          # (K, 512), unit rows
+    # per-run concept sets: rank each hybrid against ONLY its own run's
+    # constituents (the FYP's k-way was relative to the set that was run).
+    run_of = {h: r for r, hs in RUN_SETS.items() for h in hs}
+    run_concepts = {r: sorted({c for h in hs for c in constituents(h)}) for r, hs in RUN_SETS.items()}
+    run_cmat = {r: np.array([cent[c] for c in cs]) for r, cs in run_concepts.items()}
     for i, it in enumerate(items):
         if it["kind"] == 0:
             it.update(c1="", c2="", w=None, residual=None, sim1=None, sim2=None, hyb=-1,
-                      rank1=None, rank2=None, both_top5=None, n_top5=None,
+                      rank1=None, rank2=None, nrank=None, both_top5=None, n_top5=None,
                       both_top10=None, n_top10=None)
             continue
         a1, a2 = constituents(it["cat"]); c1, c2 = cent[a1], cent[a2]; d = E[i]
         v = c2 - c1; t = float((d - c1) @ v / (v @ v + 1e-9)); tc = min(1, max(0, t))
-        # k-way: rank every constituent concept by similarity to this drawing
-        sims = d @ cmat.T
+        # k-way rank within this drawing's run set
+        run = run_of[it["cat"]]; cs = run_concepts[run]
+        sims = d @ run_cmat[run].T
         order = np.argsort(-sims)
-        rank_of = {concept_names[order[r]]: r + 1 for r in range(len(concept_names))}
+        rank_of = {cs[order[r]]: r + 1 for r in range(len(cs))}
         r1, r2 = rank_of[a1], rank_of[a2]
         it.update(c1=a1, c2=a2, hyb=USABLE_HYBRIDS.index(it["cat"]),
                   w=round(tc, 4), residual=round(float(np.linalg.norm(d - (c1 + tc * v))), 4),
                   sim1=round(float(d @ c1), 4), sim2=round(float(d @ c2), 4),
-                  rank1=r1, rank2=r2,
+                  rank1=r1, rank2=r2, nrank=len(cs),
                   both_top5=int(r1 <= 5 and r2 <= 5), n_top5=int(r1 <= 5) + int(r2 <= 5),
                   both_top10=int(r1 <= 10 and r2 <= 10), n_top10=int(r1 <= 10) + int(r2 <= 10))
 
@@ -273,11 +284,11 @@ def main():
     resid = [it["residual"] for it in items if it["kind"] == 1]
     rlo, rhi = min(resid), max(resid)
     P = dict(file=[], cat=[], kind=[], hyb=[], age=[], c1=[], c2=[], w=[], residual=[],
-             sim1=[], sim2=[], rank1=[], rank2=[], both_top5=[], n_top5=[],
+             sim1=[], sim2=[], rank1=[], rank2=[], nrank=[], both_top5=[], n_top5=[],
              both_top10=[], n_top10=[], ux=[], uy=[], tx=[], ty=[], ix=[], iy=[])
     for i, it in enumerate(items):
         for k in ("file", "cat", "kind", "hyb", "age", "c1", "c2", "w", "residual",
-                  "sim1", "sim2", "rank1", "rank2", "both_top5", "n_top5",
+                  "sim1", "sim2", "rank1", "rank2", "nrank", "both_top5", "n_top5",
                   "both_top10", "n_top10"):
             P[k].append(it[k])
         P["ux"].append(scale(u[i, 0], u[:, 0].min(), u[:, 0].max()))

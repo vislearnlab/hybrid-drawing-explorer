@@ -294,7 +294,7 @@ function showCard(i){
       <tr class="sec"><td colspan="2">Similarity to constituents</td></tr>
       <tr><td class="k">${c1}</td><td class="v">${fmt(D.sim1[i],3)}</td></tr>
       <tr><td class="k">${c2}</td><td class="v">${fmt(D.sim2[i],3)}</td></tr>
-      <tr class="sec"><td colspan="2">Constituent rank (of ${ALL.n_concepts} concepts)</td></tr>
+      <tr class="sec"><td colspan="2">Constituent rank (of ${D.nrank[i]} concepts in its run)</td></tr>
       <tr><td class="k">${c1} rank</td><td class="v">#${D.rank1[i]} ${D.rank1[i]<=5?'<span class="pill ok">top-5</span>':D.rank1[i]<=10?'<span class="pill ok">top-10</span>':''}</td></tr>
       <tr><td class="k">${c2} rank</td><td class="v">#${D.rank2[i]} ${D.rank2[i]<=5?'<span class="pill ok">top-5</span>':D.rank2[i]<=10?'<span class="pill ok">top-10</span>':''}</td></tr>
       <tr><td class="k">both in top-5 / top-10</td><td class="v">${D.both_top5[i]?'<b style="color:#5ed694">yes</b>':'no'} / ${D.both_top10[i]?'<b style="color:#5ed694">yes</b>':'no'}</td></tr>
@@ -326,7 +326,7 @@ function buildLegend(){
                   <div class="row"><span class="sw" style="background:${TOP5COL[1]}"></span>one constituent in top-${k}</div>
                   <div class="row"><span class="sw" style="background:${TOP5COL[0]}"></span>neither in top-${k}</div>
                   <div class="row"><span class="sw" style="background:${NODATA};opacity:.6"></span>pure drawings</div>
-                  <div class="stat">CLIP ranks all ${ALL.n_concepts} concepts by similarity; this counts how many of the drawing's two parents land in the top ${k}.</div>`;
+                  <div class="stat">CLIP ranks the concepts in the drawing's own run by similarity; this counts how many of its two parents land in the top ${k}.</div>`;
   } else if(colorMode==="both_top5" || colorMode==="both_top10"){ const k=colorMode==="both_top5"?5:10; el.className="group";
     el.innerHTML=`<div class="row"><span class="sw" style="background:#5ed694"></span>both constituents in top-${k}</div>
                   <div class="row"><span class="sw" style="background:#ff6b6b"></span>not both</div>
