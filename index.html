@@ -28,10 +28,18 @@
   .btnrow { display:flex; gap:6px; flex-wrap:wrap; }
   .chip { cursor:pointer; width:auto; padding:5px 9px; font-size:11.5px; border-radius:20px; }
   .chip:hover { border-color:var(--accent); }
-  #hyblist { border:1px solid var(--line); border-radius:8px; padding:6px 8px; background:var(--panel2);
-    display:grid; grid-template-columns:1fr 1fr; gap:1px 10px; max-height:230px; overflow-y:auto; }
-  #hyblist label { display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; text-transform:capitalize; padding:2px 0; }
-  #hyblist input { accent-color:var(--accent); margin:0; }
+  #hyblist, #purelist { border:1px solid var(--line); border-radius:8px; padding:6px 8px; background:var(--panel2);
+    display:grid; grid-template-columns:1fr 1fr; gap:1px 10px; max-height:200px; overflow-y:auto; }
+  #hyblist label, #purelist label { display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; text-transform:capitalize; padding:2px 0; }
+  #hyblist input, #purelist input { accent-color:var(--accent); margin:0; }
+  details.explain { border:1px solid var(--line); border-radius:8px; background:var(--panel2); padding:0 10px; }
+  details.explain summary { cursor:pointer; padding:9px 0; font-size:11px; font-weight:600; letter-spacing:.04em;
+    text-transform:uppercase; color:var(--muted); list-style:none; }
+  details.explain summary::-webkit-details-marker { display:none; }
+  details.explain[open] summary { color:var(--accent); }
+  details.explain .m { font-size:11.5px; line-height:1.5; color:var(--txt); padding:2px 0 10px; }
+  details.explain .m b { color:var(--accent); }
+  details.explain .m p { margin:0 0 8px; }
   .toggle { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; padding:6px 0; }
   .toggle input { accent-color:var(--accent); width:auto; }
   #panes { display:grid; grid-template-columns:1fr 1fr; height:100vh; }
@@ -87,6 +95,20 @@
     </div>
 
     <div class="group">
+      <details class="explain">
+        <summary>ⓘ What do the metrics mean?</summary>
+        <div class="m">
+          <p>Each drawing becomes a 512-number CLIP "fingerprint". Each pure concept's average fingerprint is its <b>centroid</b>. A hybrid of A + B is placed relative to A's and B's centroids:</p>
+          <p><b>Interpolation weight (blend)</b> — where the drawing falls on the line from constituent&nbsp;1 (0) to constituent&nbsp;2 (1). 0 = looks like the first, 1 = the second, 0.5 = even blend.</p>
+          <p><b>Residual (emergent features)</b> — how far off that line it sits. Low = a clean mash-up of the two; high = features that are neither parent (something new the child invented).</p>
+          <p><b>Favored constituent</b> — same as blend, colored so you can see which parent each leans toward.</p>
+          <p><b>Similarity to constituents</b> — how much it looks like each parent on its own (0–1).</p>
+          <p><b>UMAP / t-SNE</b> — two ways to flatten the fingerprints into a 2-D map; nearby dots look alike. The toggle switches between them.</p>
+        </div>
+      </details>
+    </div>
+
+    <div class="group">
       <label class="h">Hybrid categories <span id="hybCount" style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;"></span></label>
       <div class="btnrow" style="margin-bottom:6px;">
         <button class="chip" data-act="all">All</button>
@@ -96,7 +118,13 @@
     </div>
 
     <div class="group">
-      <label class="toggle"><input type="checkbox" id="showPure" checked /> Show pure constituent drawings (UMAP)</label>
+      <label class="h">Pure constituents <span id="pureCount" style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;"></span></label>
+      <div class="btnrow" style="margin-bottom:6px;">
+        <button class="chip" data-pact="all">All</button>
+        <button class="chip" data-pact="none">None</button>
+      </div>
+      <div id="purelist"></div>
+      <div class="stat">Tip: set hybrids to <b>None</b> to see only the pure categories.</div>
     </div>
 
     <div class="group"><button id="reset" style="cursor:pointer;">Reset view</button></div>
@@ -148,7 +176,7 @@ function hybColor(i){const n=(HYB&&HYB.length)||17;return `hsl(${(i*360/n+15)%36
 function diverge(t){ // 0 -> blue (c1), 1 -> orange (c2)
   return t<0.5 ? ramp([[58,160,255],[150,150,170]], t*2) : ramp([[150,150,170],[255,123,58]], (t-0.5)*2); }
 
-const F={ hyb:new Set(), showPure:true };
+const F={ hyb:new Set(), pure:new Set() };
 let colorMode="kind", LAYOUT="umap";
 const NULLABLE={w:1, residual:1, winner:1};   // pures have no value -> faint
 function val(i){ // metric value for current mode, or null
@@ -172,10 +200,10 @@ function colorOf(i){
     case "age": { const v=D.age[i]; return v==null?null:(v>=18?"#ff5ec9":ramp(VIRIDIS,(v-2)/8)); }
   }
 }
-// pures gated only by showPure; hybrids gated by the hybrid-category filter
+// each list is an explicit set of what's shown (empty set = show none)
 function show(i){
-  if(D.kind[i]===0) return F.showPure;
-  return F.hyb.size===0 || F.hyb.has(D.hyb[i]);
+  if(D.kind[i]===0) return F.pure.has(D.cat[i]);
+  return F.hyb.has(D.hyb[i]);
 }
 
 let selIdx=-1, pinned=false, lastPane="U";
@@ -295,10 +323,22 @@ function buildHybList(){
     lab.querySelector("input").onchange=e=>{ if(e.target.checked)F.hyb.add(i); else F.hyb.delete(i);
       document.getElementById("hybCount").textContent=`(${F.hyb.size===HYB.length?'all':F.hyb.size})`; drawAll(); updateStat(); };
     list.appendChild(lab); });
-  document.querySelectorAll("#side .chip").forEach(b=>{ b.onclick=()=>{ const a=b.dataset.act;
-    if(a==="all") HYB.forEach((_,i)=>F.hyb.add(i)); else F.hyb.clear();
+  document.querySelectorAll("[data-act]").forEach(b=>{ b.onclick=()=>{
+    if(b.dataset.act==="all") HYB.forEach((_,i)=>F.hyb.add(i)); else F.hyb.clear();
     document.querySelectorAll("#hyblist input").forEach(cb=>cb.checked=F.hyb.has(+cb.value));
     document.getElementById("hybCount").textContent=`(${F.hyb.size===HYB.length?'all':F.hyb.size||'none'})`; drawAll(); updateStat(); }; });
+}
+function buildPureList(){
+  const list=document.getElementById("purelist"); list.innerHTML="";
+  ALL.pures.forEach(p=>{ const lab=document.createElement("label");
+    lab.innerHTML=`<input type="checkbox" value="${p}" checked> ${p.replace(/^an? /,'')}`;
+    lab.querySelector("input").onchange=e=>{ if(e.target.checked)F.pure.add(p); else F.pure.delete(p);
+      document.getElementById("pureCount").textContent=`(${F.pure.size===ALL.pures.length?'all':F.pure.size||'none'})`; drawAll(); updateStat(); };
+    list.appendChild(lab); });
+  document.querySelectorAll("[data-pact]").forEach(b=>{ b.onclick=()=>{
+    if(b.dataset.pact==="all") ALL.pures.forEach(p=>F.pure.add(p)); else F.pure.clear();
+    document.querySelectorAll("#purelist input").forEach(cb=>cb.checked=F.pure.has(cb.value));
+    document.getElementById("pureCount").textContent=`(${F.pure.size===ALL.pures.length?'all':F.pure.size||'none'})`; drawAll(); updateStat(); }; });
 }
 
 document.getElementById("colorby").onchange=e=>{colorMode=e.target.value;buildLegend();drawAll();updateStat();};
@@ -309,7 +349,6 @@ document.querySelectorAll("#layoutToggle .chip").forEach(b=>b.onclick=()=>{
   document.getElementById("ttlU").textContent = "🗺️ "+(LAYOUT==="umap"?"UMAP":"t-SNE");
   PU.reset();
 });
-document.getElementById("showPure").onchange=e=>{F.showPure=e.target.checked;drawAll();updateStat();};
 document.getElementById("reset").onclick=()=>{PU.reset();PI.reset();};
 window.addEventListener("resize",()=>{PU.resize();PI.resize();});
 
@@ -317,11 +356,12 @@ async function load(){
   ALL=await (await fetch("points.json")).json();
   D=ALL.items; HYB=ALL.hybrids;
   RES_LO=Math.min(...D.residual.filter(v=>v!=null)); RES_HI=Math.max(...D.residual.filter(v=>v!=null));
-  HYB.forEach((_,i)=>F.hyb.add(i));
-  document.getElementById("count").textContent=`${ALL.n_hybrid} hybrid + ${ALL.n_pure} pure drawings · ${HYB.length} hybrid concepts.`;
+  HYB.forEach((_,i)=>F.hyb.add(i)); ALL.pures.forEach(p=>F.pure.add(p));
+  document.getElementById("count").textContent=`${ALL.n_hybrid} hybrid + ${ALL.n_pure} pure drawings · ${HYB.length} hybrid + ${ALL.pures.length} pure concepts.`;
   document.getElementById("hybCount").textContent=`(all)`;
+  document.getElementById("pureCount").textContent=`(all)`;
   PU=new Pane("paneU","ux","uy",false); PI=new Pane("paneI","ix","iy",true);
-  buildHybList(); buildLegend();
+  buildHybList(); buildPureList(); buildLegend();
   await probeBase(); PU.resize(); PI.resize(); updateStat();
 }
 function probeBase(){ return new Promise(res=>{ let k=0; const f0=D.file[0];
