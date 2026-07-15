@@ -87,6 +87,7 @@
     <div class="group">
       <label class="h" for="colorby">Color by</label>
       <select id="colorby">
+        <option value="purecat">Pure category (distinct color each)</option>
         <option value="kind">Hybrid vs pure</option>
         <option value="hyb">Hybrid category</option>
         <option value="w">Interpolation weight (blend)</option>
@@ -188,6 +189,13 @@ function hybColor(i){const n=(HYB&&HYB.length)||17;return `hsl(${(i*360/n+15)%36
 function diverge(t){ // 0 -> blue (c1), 1 -> orange (c2)
   return t<0.5 ? ramp([[58,160,255],[150,150,170]], t*2) : ramp([[150,150,170],[255,123,58]], (t-0.5)*2); }
 let SHAPES=true;
+// distinct color per pure category (golden-angle hue spread); hybrids = blend of their two
+function hslToRgb(h,s,l){ h/=360; const a=s*Math.min(l,1-l);
+  const f=n=>{const k=(n+h*12)%12; return Math.round(255*(l-a*Math.max(-1,Math.min(k-3,9-k,1))));};
+  return [f(0),f(8),f(4)]; }
+let PURE_RGB={};
+function rgbStr(c){return `rgb(${c[0]},${c[1]},${c[2]})`;}
+function mix(a,b){return rgbStr([(a[0]+b[0])>>1,(a[1]+b[1])>>1,(a[2]+b[2])>>1]);}
 // role marker: 0 = constituent 1 (circle), 1 = constituent 2 (square), 2 = hybrid (triangle)
 function drawMark(ctx, role, x, y, r){
   if(role===2){ const s=r*1.55; ctx.beginPath(); ctx.moveTo(x,y-s); ctx.lineTo(x-s*0.92,y+s*0.72); ctx.lineTo(x+s*0.92,y+s*0.72); ctx.closePath(); ctx.fill(); }
@@ -196,7 +204,7 @@ function drawMark(ctx, role, x, y, r){
 }
 
 const F={ hyb:new Set(), pure:new Set() };
-let colorMode="kind", LAYOUT="umap";
+let colorMode="purecat", LAYOUT="umap";
 const NULLABLE={w:1, residual:1, winner:1, n_top5:1, both_top5:1, n_top10:1, both_top10:1};   // pures have no value -> faint
 function val(i){ // metric value for current mode, or null
   switch(colorMode){
@@ -210,7 +218,7 @@ function val(i){ // metric value for current mode, or null
     case "n_top10": return D.n_top10[i];
     case "both_top10": return D.both_top10[i];
     case "age": return D.age[i];
-    case "role": case "group": return 1;   // never null (every drawing has a role/family)
+    case "role": case "group": case "purecat": return 1;   // never null
   }
 }
 const TOP5COL = ["#ff6b6b", "#ffd166", "#5ed694"];   // 0 / 1 / 2 constituents recognized
@@ -224,6 +232,7 @@ function colorOf(i){
     case "hyb": return D.kind[i] ? hybColor(D.hyb[i]) : null;
     case "group": { const f=famOf(i); return f==null?NODATA:hybColor(f); }
     case "role": return D.kind[i] ? diverge(D.w[i]) : (PURE_SLOT[D.cat[i]]===0 ? "#3aa0ff" : "#ff7b3a");
+    case "purecat": return D.kind[i] ? mix(PURE_RGB[D.c1[i]], PURE_RGB[D.c2[i]]) : rgbStr(PURE_RGB[D.cat[i]]);
     case "w": { const v=D.w[i]; return v==null?null:ramp(VIRIDIS,v); }
     case "residual": { const v=D.residual[i]; return v==null?null:ramp(MAGMA,(v-RES_LO)/(RES_HI-RES_LO)); }
     case "winner": { const v=D.w[i]; return v==null?null:diverge(v); }
@@ -354,6 +363,12 @@ function buildLegend(){
                   <div class="stat">Focus a pair, then see how the ▲ hybrids sit between the ● and ■ pure clusters.</div>`;
   } else if(colorMode==="group"){ el.className="group";
     el.innerHTML=`<div class="stat">Each hybrid family — a pair and its hybrid — shares one color. Shapes separate them: ● constituent 1 · ■ constituent 2 · ▲ hybrid. Use the hybrid + pure checklists (or Focus a pair) to show a few families at once.</div>`;
+  } else if(colorMode==="purecat"){ el.className="group";
+    const sel=[...F.pure].sort();
+    el.innerHTML = (sel.length && sel.length<=18
+      ? sel.map(p=>`<div class="row"><span class="sw" style="background:${rgbStr(PURE_RGB[p])}"></span>${p.replace(/^an? /,'')}</div>`).join("")
+        + `<div class="stat">hybrids (▲) = blend of their two constituents' colors.</div>`
+      : `<div class="stat">Each pure category has its own color; hybrids (▲) blend their two constituents. Narrow the pure list or Focus a pair to see a color key here.</div>`);
   } else if(colorMode==="age"){ el.className="group grad";
     el.innerHTML=`<div class="bar" style="background:linear-gradient(90deg,${V})"></div>
       <div class="gradlabels"><span>age 2</span><span>age 10</span></div>
@@ -361,6 +376,7 @@ function buildLegend(){
 }
 
 function updateStat(){
+  if(colorMode==="purecat") buildLegend();   // color key follows the pure selection
   let u=0, ih=0; for(let i=0;i<D.n;i++){ if(PU.vis(i))u++; if(PI.vis(i))ih++; }
   document.getElementById("cntU").textContent=`· ${u} shown`;
   document.getElementById("cntI").textContent=`· ${ih} hybrids`;
@@ -429,6 +445,8 @@ async function load(){
   RES_LO=Math.min(...D.residual.filter(v=>v!=null)); RES_HI=Math.max(...D.residual.filter(v=>v!=null));
   Object.entries(ALL.constituents).forEach(([h,cs])=>{ const hi=HYB.indexOf(h);
     PURE_HYB[cs[0]]=hi; PURE_SLOT[cs[0]]=0; PURE_HYB[cs[1]]=hi; PURE_SLOT[cs[1]]=1; });
+  ALL.pures.forEach((p,i)=>{ PURE_RGB[p]=hslToRgb((i*137.508)%360, 0.62, 0.58); });
+  document.getElementById("colorby").value="purecat";
   HYB.forEach((_,i)=>F.hyb.add(i)); ALL.pures.forEach(p=>F.pure.add(p));
   document.getElementById("count").textContent=`${ALL.n_hybrid} hybrid + ${ALL.n_pure} pure drawings · ${HYB.length} hybrid + ${ALL.pures.length} pure concepts.`;
   document.getElementById("hybCount").textContent=`(all)`;
