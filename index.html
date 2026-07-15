@@ -64,6 +64,9 @@
   .blendbar { height:9px; border-radius:6px; background:linear-gradient(90deg,#3aa0ff,#ff7b3a); position:relative; margin:7px 0 3px; }
   .blendbar .pin { position:absolute; top:-3px; width:4px; height:15px; border-radius:2px; background:#fff; transform:translateX(-2px); }
   .ends { display:flex; justify-content:space-between; font-size:10.5px; color:var(--muted); text-transform:capitalize; }
+  .pill { display:inline-block; padding:0 6px; border-radius:20px; font-size:10px; font-weight:600; }
+  .pill.ok { background:#11351f; color:#5ed694; }
+  #focusPair { margin-bottom:8px; }
   a { color:var(--accent); }
 </style>
 </head>
@@ -89,6 +92,8 @@
         <option value="w">Interpolation weight (blend)</option>
         <option value="residual">Residual (emergent features)</option>
         <option value="winner">Which constituent it favors</option>
+        <option value="n_top5">Constituents CLIP recognizes (0–2, top-5)</option>
+        <option value="both_top5">Both constituents in top-5</option>
         <option value="age">Producer age</option>
       </select>
       <div id="legend" class="group" style="margin-top:11px;"></div>
@@ -109,6 +114,8 @@
     </div>
 
     <div class="group">
+      <label class="h">Focus a pair</label>
+      <select id="focusPair"><option value="">— show everything —</option></select>
       <label class="h">Hybrid categories <span id="hybCount" style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;"></span></label>
       <div class="btnrow" style="margin-bottom:6px;">
         <button class="chip" data-act="all">All</button>
@@ -178,7 +185,7 @@ function diverge(t){ // 0 -> blue (c1), 1 -> orange (c2)
 
 const F={ hyb:new Set(), pure:new Set() };
 let colorMode="kind", LAYOUT="umap";
-const NULLABLE={w:1, residual:1, winner:1};   // pures have no value -> faint
+const NULLABLE={w:1, residual:1, winner:1, n_top5:1, both_top5:1};   // pures have no value -> faint
 function val(i){ // metric value for current mode, or null
   switch(colorMode){
     case "kind": return D.kind[i];
@@ -186,9 +193,12 @@ function val(i){ // metric value for current mode, or null
     case "w": return D.w[i];
     case "residual": return D.residual[i];
     case "winner": return D.w[i];   // 0..1 toward constituent 2
+    case "n_top5": return D.n_top5[i];
+    case "both_top5": return D.both_top5[i];
     case "age": return D.age[i];
   }
 }
+const TOP5COL = ["#ff6b6b", "#ffd166", "#5ed694"];   // 0 / 1 / 2 constituents recognized
 let RES_LO=0, RES_HI=1;
 function colorOf(i){
   switch(colorMode){
@@ -197,6 +207,8 @@ function colorOf(i){
     case "w": { const v=D.w[i]; return v==null?null:ramp(VIRIDIS,v); }
     case "residual": { const v=D.residual[i]; return v==null?null:ramp(MAGMA,(v-RES_LO)/(RES_HI-RES_LO)); }
     case "winner": { const v=D.w[i]; return v==null?null:diverge(v); }
+    case "n_top5": { const v=D.n_top5[i]; return v==null?null:TOP5COL[v]; }
+    case "both_top5": { const v=D.both_top5[i]; return v==null?null:(v?"#5ed694":"#ff6b6b"); }
     case "age": { const v=D.age[i]; return v==null?null:(v>=18?"#ff5ec9":ramp(VIRIDIS,(v-2)/8)); }
   }
 }
@@ -276,6 +288,10 @@ function showCard(i){
       <tr class="sec"><td colspan="2">Similarity to constituents</td></tr>
       <tr><td class="k">${c1}</td><td class="v">${fmt(D.sim1[i],3)}</td></tr>
       <tr><td class="k">${c2}</td><td class="v">${fmt(D.sim2[i],3)}</td></tr>
+      <tr class="sec"><td colspan="2">Constituent rank (of ${ALL.n_concepts} concepts)</td></tr>
+      <tr><td class="k">${c1} rank</td><td class="v">#${D.rank1[i]} ${D.rank1[i]<=5?'<span class="pill ok">top-5</span>':''}</td></tr>
+      <tr><td class="k">${c2} rank</td><td class="v">#${D.rank2[i]} ${D.rank2[i]<=5?'<span class="pill ok">top-5</span>':''}</td></tr>
+      <tr><td class="k">both in top-5?</td><td class="v">${D.both_top5[i]?'<b style="color:#5ed694">yes</b>':'no'}</td></tr>
     </table>`;
 }
 function hideCard(){ card.classList.remove("show"); document.getElementById("detailEmpty").style.display="block"; }
@@ -299,6 +315,16 @@ function buildLegend(){
     el.innerHTML=`<div class="bar" style="background:linear-gradient(90deg,#3aa0ff,#9696aa,#ff7b3a)"></div>
       <div class="gradlabels"><span>constituent 1</span><span>constituent 2</span></div>
       <div class="row" style="margin-top:6px;"><span class="sw" style="background:${NODATA};opacity:.6"></span>pure drawings</div>`;
+  } else if(colorMode==="n_top5"){ el.className="group";
+    el.innerHTML=`<div class="row"><span class="sw" style="background:${TOP5COL[2]}"></span>both constituents in top-5</div>
+                  <div class="row"><span class="sw" style="background:${TOP5COL[1]}"></span>one constituent in top-5</div>
+                  <div class="row"><span class="sw" style="background:${TOP5COL[0]}"></span>neither in top-5</div>
+                  <div class="row"><span class="sw" style="background:${NODATA};opacity:.6"></span>pure drawings</div>
+                  <div class="stat">CLIP ranks all ${ALL.n_concepts} concepts by similarity; this counts how many of the drawing's two parents land in the top 5.</div>`;
+  } else if(colorMode==="both_top5"){ el.className="group";
+    el.innerHTML=`<div class="row"><span class="sw" style="background:#5ed694"></span>both constituents in top-5</div>
+                  <div class="row"><span class="sw" style="background:#ff6b6b"></span>not both</div>
+                  <div class="row"><span class="sw" style="background:${NODATA};opacity:.6"></span>pure drawings</div>`;
   } else if(colorMode==="age"){ el.className="group grad";
     el.innerHTML=`<div class="bar" style="background:linear-gradient(90deg,${V})"></div>
       <div class="gradlabels"><span>age 2</span><span>age 10</span></div>
@@ -340,6 +366,21 @@ function buildPureList(){
     document.querySelectorAll("#purelist input").forEach(cb=>cb.checked=F.pure.has(cb.value));
     document.getElementById("pureCount").textContent=`(${F.pure.size===ALL.pures.length?'all':F.pure.size||'none'})`; drawAll(); updateStat(); }; });
 }
+function syncChecks(){
+  document.querySelectorAll("#hyblist input").forEach(cb=>cb.checked=F.hyb.has(+cb.value));
+  document.querySelectorAll("#purelist input").forEach(cb=>cb.checked=F.pure.has(cb.value));
+  document.getElementById("hybCount").textContent=`(${F.hyb.size===HYB.length?'all':F.hyb.size||'none'})`;
+  document.getElementById("pureCount").textContent=`(${F.pure.size===ALL.pures.length?'all':F.pure.size||'none'})`;
+}
+function buildFocusPair(){
+  const sel=document.getElementById("focusPair");
+  HYB.forEach((h,i)=>{ const cs=ALL.constituents[h]||[]; const o=document.createElement("option");
+    o.value=i; o.textContent=`${h.replace(/^an? /,'')}  (${cs.map(x=>x.replace(/^an? /,'')).join(" + ")})`; sel.appendChild(o); });
+  sel.onchange=()=>{ const v=sel.value;
+    if(v===""){ F.hyb=new Set(HYB.map((_,i)=>i)); F.pure=new Set(ALL.pures); }
+    else { const i=+v; F.hyb=new Set([i]); F.pure=new Set(ALL.constituents[HYB[i]]); }
+    syncChecks(); drawAll(); updateStat(); };
+}
 
 document.getElementById("colorby").onchange=e=>{colorMode=e.target.value;buildLegend();drawAll();updateStat();};
 document.querySelectorAll("#layoutToggle .chip").forEach(b=>b.onclick=()=>{
@@ -361,7 +402,7 @@ async function load(){
   document.getElementById("hybCount").textContent=`(all)`;
   document.getElementById("pureCount").textContent=`(all)`;
   PU=new Pane("paneU","ux","uy",false); PI=new Pane("paneI","ix","iy",true);
-  buildHybList(); buildPureList(); buildLegend();
+  buildHybList(); buildPureList(); buildFocusPair(); buildLegend();
   await probeBase(); PU.resize(); PI.resize(); updateStat();
 }
 function probeBase(){ return new Promise(res=>{ let k=0; const f0=D.file[0];

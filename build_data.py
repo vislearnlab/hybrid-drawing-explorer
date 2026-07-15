@@ -195,15 +195,26 @@ def main():
     for p in pures:
         idx = [i for i, it in enumerate(items) if it["kind"] == 0 and it["cat"] == p]
         v = E[idx].mean(0); cent[p] = v / (np.linalg.norm(v) + 1e-9)
+    # matrix of all constituent centroids for k-way rank-ordering (the FYP metric)
+    concept_names = list(cent.keys())
+    cmat = np.array([cent[c] for c in concept_names])          # (K, 512), unit rows
     for i, it in enumerate(items):
         if it["kind"] == 0:
-            it.update(c1="", c2="", w=None, residual=None, sim1=None, sim2=None, hyb=-1)
+            it.update(c1="", c2="", w=None, residual=None, sim1=None, sim2=None, hyb=-1,
+                      rank1=None, rank2=None, both_top5=None, n_top5=None)
             continue
         a1, a2 = constituents(it["cat"]); c1, c2 = cent[a1], cent[a2]; d = E[i]
         v = c2 - c1; t = float((d - c1) @ v / (v @ v + 1e-9)); tc = min(1, max(0, t))
+        # k-way: rank every constituent concept by similarity to this drawing
+        sims = d @ cmat.T
+        order = np.argsort(-sims)
+        rank_of = {concept_names[order[r]]: r + 1 for r in range(len(concept_names))}
+        r1, r2 = rank_of[a1], rank_of[a2]
+        n_top5 = int(r1 <= 5) + int(r2 <= 5)
         it.update(c1=a1, c2=a2, hyb=USABLE_HYBRIDS.index(it["cat"]),
                   w=round(tc, 4), residual=round(float(np.linalg.norm(d - (c1 + tc * v))), 4),
-                  sim1=round(float(d @ c1), 4), sim2=round(float(d @ c2), 4))
+                  sim1=round(float(d @ c1), 4), sim2=round(float(d @ c2), 4),
+                  rank1=r1, rank2=r2, both_top5=int(r1 <= 5 and r2 <= 5), n_top5=n_top5)
 
     # ---- layouts: UMAP + t-SNE ----
     print("UMAP ...")
@@ -215,9 +226,11 @@ def main():
     resid = [it["residual"] for it in items if it["kind"] == 1]
     rlo, rhi = min(resid), max(resid)
     P = dict(file=[], cat=[], kind=[], hyb=[], age=[], c1=[], c2=[], w=[], residual=[],
-             sim1=[], sim2=[], ux=[], uy=[], tx=[], ty=[], ix=[], iy=[])
+             sim1=[], sim2=[], rank1=[], rank2=[], both_top5=[], n_top5=[],
+             ux=[], uy=[], tx=[], ty=[], ix=[], iy=[])
     for i, it in enumerate(items):
-        for k in ("file", "cat", "kind", "hyb", "age", "c1", "c2", "w", "residual", "sim1", "sim2"):
+        for k in ("file", "cat", "kind", "hyb", "age", "c1", "c2", "w", "residual",
+                  "sim1", "sim2", "rank1", "rank2", "both_top5", "n_top5"):
             P[k].append(it[k])
         P["ux"].append(scale(u[i, 0], u[:, 0].min(), u[:, 0].max()))
         P["uy"].append(scale(u[i, 1], u[:, 1].min(), u[:, 1].max()))
@@ -230,6 +243,8 @@ def main():
     P["n"] = len(items)
 
     out = dict(draw_dir="drawings", hybrids=USABLE_HYBRIDS, pures=pures,
+               constituents={h: list(constituents(h)) for h in USABLE_HYBRIDS},
+               n_concepts=len(pures),
                n_hybrid=sum(P["kind"]), n_pure=P["n"] - sum(P["kind"]), items=P)
     json.dump(out, open(os.path.join(HERE, "points.json"), "w"))
     print(f"wrote points.json: {P['n']} ({out['n_hybrid']} hybrid + {out['n_pure']} pure), "
