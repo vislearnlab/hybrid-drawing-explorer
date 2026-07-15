@@ -57,7 +57,8 @@ HYBRID_MAP = {
 }
 USABLE_HYBRIDS = list(HYBRID_MAP)
 DUR_MIN, INK_MIN, INK_MAX = 2.0, 0.01, 0.15   # drop blank (<1% ink) and scribbles
-SAMPLE_HYBRID, SAMPLE_PURE = 200, 110     # per concept
+SAMPLE_HYBRID, SAMPLE_PURE = 200, 110     # displayed per concept
+CENTROID_SAMPLE = 500                      # drawings per concept for the FYP centroid (embed-only)
 EMB_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".emb_cache.npz")
 
 
@@ -143,6 +144,45 @@ def collect(colls, categories, sample_n, kind):
     return out
 
 
+def extra_embeddings(colls, concept, need, skip_files, cache):
+    """Embed-only pool for a concept's centroid: pull up to `need` more quality
+    drawings (deduped, not already displayed), embed them without saving PNGs.
+    Cached by filename so re-runs are fast."""
+    if need <= 0:
+        return []
+    by_sess = {}
+    for coll in colls:
+        for d in coll.find({"dataType": "finalImage", "category": concept},
+                           {"imgData": 1, "sessionId": 1, "trialNum": 1,
+                            "startTrialTime": 1, "endTrialTime": 1}):
+            st, et = d.get("startTrialTime"), d.get("endTrialTime")
+            if st and et and (et - st) / 1000.0 < DUR_MIN:
+                continue
+            s = d.get("sessionId")
+            prev = by_sess.get(s)
+            if prev is None or (d.get("endTrialTime") or 0) >= (prev.get("endTrialTime") or 0):
+                by_sess[s] = d
+    cands = list(by_sess.values()); random.shuffle(cands)
+    out = []
+    for d in cands:
+        if len(out) >= need:
+            break
+        fname = f"{slug(concept)}_{slug(d.get('sessionId'))}_{d.get('trialNum')}.png"
+        if fname in skip_files:
+            continue
+        if fname in cache:
+            out.append(cache[fname]); continue
+        try:
+            rgba = decode(d); dink = ink_density(rgba)
+            if dink < INK_MIN or dink > INK_MAX:
+                continue
+            e = clip_lib.embed_pil(rgba)
+        except Exception:
+            continue
+        cache[fname] = e; out.append(e)
+    return out
+
+
 def scale(v, lo, hi, a=40, b=960):
     return round(a + (v - lo) / (hi - lo + 1e-9) * (b - a), 2)
 
@@ -187,21 +227,27 @@ def main():
         if (j + 1) % 300 == 0:
             print(f"    embedded {j+1}/{len(items)} ({hits} cached)")
     E = np.array(embs)
-    np.savez(EMB_CACHE, files=np.array(list(cache.keys())), embs=np.array(list(cache.values())))
-    print(f"  {hits}/{len(items)} embeddings from cache")
+    print(f"  {hits}/{len(items)} display embeddings from cache")
 
-    # ---- centroids + interpolation ----
+    # ---- FYP-style centroids: mean over MANY kiddraw drawings per concept ----
+    # (embed-only pool, not saved to disk, so the repo stays light)
     cent = {}
+    display_files = {it["file"] for it in items}
+    pure_colls = [db[cn] for cn in PURE_COLLS]
     for p in pures:
-        idx = [i for i, it in enumerate(items) if it["kind"] == 0 and it["cat"] == p]
-        v = E[idx].mean(0); cent[p] = v / (np.linalg.norm(v) + 1e-9)
+        pool = [E[i] for i, it in enumerate(items) if it["kind"] == 0 and it["cat"] == p]
+        pool += extra_embeddings(pure_colls, p, CENTROID_SAMPLE - len(pool), display_files, cache)
+        v = np.mean(pool, axis=0); cent[p] = v / (np.linalg.norm(v) + 1e-9)
+        print(f"    centroid {p}: {len(pool)} drawings")
+    np.savez(EMB_CACHE, files=np.array(list(cache.keys())), embs=np.array(list(cache.values())))
     # matrix of all constituent centroids for k-way rank-ordering (the FYP metric)
     concept_names = list(cent.keys())
     cmat = np.array([cent[c] for c in concept_names])          # (K, 512), unit rows
     for i, it in enumerate(items):
         if it["kind"] == 0:
             it.update(c1="", c2="", w=None, residual=None, sim1=None, sim2=None, hyb=-1,
-                      rank1=None, rank2=None, both_top5=None, n_top5=None)
+                      rank1=None, rank2=None, both_top5=None, n_top5=None,
+                      both_top10=None, n_top10=None)
             continue
         a1, a2 = constituents(it["cat"]); c1, c2 = cent[a1], cent[a2]; d = E[i]
         v = c2 - c1; t = float((d - c1) @ v / (v @ v + 1e-9)); tc = min(1, max(0, t))
@@ -210,11 +256,12 @@ def main():
         order = np.argsort(-sims)
         rank_of = {concept_names[order[r]]: r + 1 for r in range(len(concept_names))}
         r1, r2 = rank_of[a1], rank_of[a2]
-        n_top5 = int(r1 <= 5) + int(r2 <= 5)
         it.update(c1=a1, c2=a2, hyb=USABLE_HYBRIDS.index(it["cat"]),
                   w=round(tc, 4), residual=round(float(np.linalg.norm(d - (c1 + tc * v))), 4),
                   sim1=round(float(d @ c1), 4), sim2=round(float(d @ c2), 4),
-                  rank1=r1, rank2=r2, both_top5=int(r1 <= 5 and r2 <= 5), n_top5=n_top5)
+                  rank1=r1, rank2=r2,
+                  both_top5=int(r1 <= 5 and r2 <= 5), n_top5=int(r1 <= 5) + int(r2 <= 5),
+                  both_top10=int(r1 <= 10 and r2 <= 10), n_top10=int(r1 <= 10) + int(r2 <= 10))
 
     # ---- layouts: UMAP + t-SNE ----
     print("UMAP ...")
@@ -227,10 +274,11 @@ def main():
     rlo, rhi = min(resid), max(resid)
     P = dict(file=[], cat=[], kind=[], hyb=[], age=[], c1=[], c2=[], w=[], residual=[],
              sim1=[], sim2=[], rank1=[], rank2=[], both_top5=[], n_top5=[],
-             ux=[], uy=[], tx=[], ty=[], ix=[], iy=[])
+             both_top10=[], n_top10=[], ux=[], uy=[], tx=[], ty=[], ix=[], iy=[])
     for i, it in enumerate(items):
         for k in ("file", "cat", "kind", "hyb", "age", "c1", "c2", "w", "residual",
-                  "sim1", "sim2", "rank1", "rank2", "both_top5", "n_top5"):
+                  "sim1", "sim2", "rank1", "rank2", "both_top5", "n_top5",
+                  "both_top10", "n_top10"):
             P[k].append(it[k])
         P["ux"].append(scale(u[i, 0], u[:, 0].min(), u[:, 0].max()))
         P["uy"].append(scale(u[i, 1], u[:, 1].min(), u[:, 1].max()))

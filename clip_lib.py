@@ -50,12 +50,10 @@ def anchor_feats(which):
     return _encode_text(DRAW_ANCHORS if which == "draw" else TEXT_ANCHORS)
 
 
-def image_embedding(path, content_crop=True):
-    """L2-normalized CLIP image embedding (512-d numpy) for one drawing PNG.
-    Transparent PNGs are flattened onto white first (else convert('RGB') turns
-    the transparent background black and every drawing looks identical)."""
+def embed_pil(img, content_crop=True):
+    """L2-normalized CLIP embedding for an in-memory PIL image (any mode).
+    Transparent images are flattened onto white first."""
     m = _load()
-    img = Image.open(path)
     if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
         rgba = img.convert("RGBA")
         bg = Image.new("RGB", rgba.size, (255, 255, 255))
@@ -76,6 +74,11 @@ def image_embedding(path, content_crop=True):
         f = m["model"].encode_image(x)
         f = f / f.norm(dim=-1, keepdim=True)
     return f.cpu().numpy()[0]
+
+
+def image_embedding(path, content_crop=True):
+    """L2-normalized CLIP embedding for a drawing PNG on disk."""
+    return embed_pil(Image.open(path), content_crop=content_crop)
 
 
 def _chunk(text, max_len=50):

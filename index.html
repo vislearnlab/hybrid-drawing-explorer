@@ -94,6 +94,8 @@
         <option value="winner">Which constituent it favors</option>
         <option value="n_top5">Constituents CLIP recognizes (0–2, top-5)</option>
         <option value="both_top5">Both constituents in top-5</option>
+        <option value="n_top10">Constituents CLIP recognizes (0–2, top-10)</option>
+        <option value="both_top10">Both constituents in top-10</option>
         <option value="age">Producer age</option>
       </select>
       <div id="legend" class="group" style="margin-top:11px;"></div>
@@ -185,7 +187,7 @@ function diverge(t){ // 0 -> blue (c1), 1 -> orange (c2)
 
 const F={ hyb:new Set(), pure:new Set() };
 let colorMode="kind", LAYOUT="umap";
-const NULLABLE={w:1, residual:1, winner:1, n_top5:1, both_top5:1};   // pures have no value -> faint
+const NULLABLE={w:1, residual:1, winner:1, n_top5:1, both_top5:1, n_top10:1, both_top10:1};   // pures have no value -> faint
 function val(i){ // metric value for current mode, or null
   switch(colorMode){
     case "kind": return D.kind[i];
@@ -195,6 +197,8 @@ function val(i){ // metric value for current mode, or null
     case "winner": return D.w[i];   // 0..1 toward constituent 2
     case "n_top5": return D.n_top5[i];
     case "both_top5": return D.both_top5[i];
+    case "n_top10": return D.n_top10[i];
+    case "both_top10": return D.both_top10[i];
     case "age": return D.age[i];
   }
 }
@@ -209,6 +213,8 @@ function colorOf(i){
     case "winner": { const v=D.w[i]; return v==null?null:diverge(v); }
     case "n_top5": { const v=D.n_top5[i]; return v==null?null:TOP5COL[v]; }
     case "both_top5": { const v=D.both_top5[i]; return v==null?null:(v?"#5ed694":"#ff6b6b"); }
+    case "n_top10": { const v=D.n_top10[i]; return v==null?null:TOP5COL[v]; }
+    case "both_top10": { const v=D.both_top10[i]; return v==null?null:(v?"#5ed694":"#ff6b6b"); }
     case "age": { const v=D.age[i]; return v==null?null:(v>=18?"#ff5ec9":ramp(VIRIDIS,(v-2)/8)); }
   }
 }
@@ -289,9 +295,9 @@ function showCard(i){
       <tr><td class="k">${c1}</td><td class="v">${fmt(D.sim1[i],3)}</td></tr>
       <tr><td class="k">${c2}</td><td class="v">${fmt(D.sim2[i],3)}</td></tr>
       <tr class="sec"><td colspan="2">Constituent rank (of ${ALL.n_concepts} concepts)</td></tr>
-      <tr><td class="k">${c1} rank</td><td class="v">#${D.rank1[i]} ${D.rank1[i]<=5?'<span class="pill ok">top-5</span>':''}</td></tr>
-      <tr><td class="k">${c2} rank</td><td class="v">#${D.rank2[i]} ${D.rank2[i]<=5?'<span class="pill ok">top-5</span>':''}</td></tr>
-      <tr><td class="k">both in top-5?</td><td class="v">${D.both_top5[i]?'<b style="color:#5ed694">yes</b>':'no'}</td></tr>
+      <tr><td class="k">${c1} rank</td><td class="v">#${D.rank1[i]} ${D.rank1[i]<=5?'<span class="pill ok">top-5</span>':D.rank1[i]<=10?'<span class="pill ok">top-10</span>':''}</td></tr>
+      <tr><td class="k">${c2} rank</td><td class="v">#${D.rank2[i]} ${D.rank2[i]<=5?'<span class="pill ok">top-5</span>':D.rank2[i]<=10?'<span class="pill ok">top-10</span>':''}</td></tr>
+      <tr><td class="k">both in top-5 / top-10</td><td class="v">${D.both_top5[i]?'<b style="color:#5ed694">yes</b>':'no'} / ${D.both_top10[i]?'<b style="color:#5ed694">yes</b>':'no'}</td></tr>
     </table>`;
 }
 function hideCard(){ card.classList.remove("show"); document.getElementById("detailEmpty").style.display="block"; }
@@ -315,14 +321,14 @@ function buildLegend(){
     el.innerHTML=`<div class="bar" style="background:linear-gradient(90deg,#3aa0ff,#9696aa,#ff7b3a)"></div>
       <div class="gradlabels"><span>constituent 1</span><span>constituent 2</span></div>
       <div class="row" style="margin-top:6px;"><span class="sw" style="background:${NODATA};opacity:.6"></span>pure drawings</div>`;
-  } else if(colorMode==="n_top5"){ el.className="group";
-    el.innerHTML=`<div class="row"><span class="sw" style="background:${TOP5COL[2]}"></span>both constituents in top-5</div>
-                  <div class="row"><span class="sw" style="background:${TOP5COL[1]}"></span>one constituent in top-5</div>
-                  <div class="row"><span class="sw" style="background:${TOP5COL[0]}"></span>neither in top-5</div>
+  } else if(colorMode==="n_top5" || colorMode==="n_top10"){ const k=colorMode==="n_top5"?5:10; el.className="group";
+    el.innerHTML=`<div class="row"><span class="sw" style="background:${TOP5COL[2]}"></span>both constituents in top-${k}</div>
+                  <div class="row"><span class="sw" style="background:${TOP5COL[1]}"></span>one constituent in top-${k}</div>
+                  <div class="row"><span class="sw" style="background:${TOP5COL[0]}"></span>neither in top-${k}</div>
                   <div class="row"><span class="sw" style="background:${NODATA};opacity:.6"></span>pure drawings</div>
-                  <div class="stat">CLIP ranks all ${ALL.n_concepts} concepts by similarity; this counts how many of the drawing's two parents land in the top 5.</div>`;
-  } else if(colorMode==="both_top5"){ el.className="group";
-    el.innerHTML=`<div class="row"><span class="sw" style="background:#5ed694"></span>both constituents in top-5</div>
+                  <div class="stat">CLIP ranks all ${ALL.n_concepts} concepts by similarity; this counts how many of the drawing's two parents land in the top ${k}.</div>`;
+  } else if(colorMode==="both_top5" || colorMode==="both_top10"){ const k=colorMode==="both_top5"?5:10; el.className="group";
+    el.innerHTML=`<div class="row"><span class="sw" style="background:#5ed694"></span>both constituents in top-${k}</div>
                   <div class="row"><span class="sw" style="background:#ff6b6b"></span>not both</div>
                   <div class="row"><span class="sw" style="background:${NODATA};opacity:.6"></span>pure drawings</div>`;
   } else if(colorMode==="age"){ el.className="group grad";
